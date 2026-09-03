@@ -1,7 +1,7 @@
 ---
 title: "Service Workers in Ultraviolet: How URL Rewriting Works"
 sidebarTitle: "Service Workers"
-description: "Ultraviolet registers a service worker that intercepts every fetch request and rewrites URLs through the proxy prefix, enabling seamless transparent proxying."
+description: "How Ultraviolet registers a service worker to intercept fetches, rewrite URLs through the proxy prefix, and enable seamless transparent proxying."
 ---
 
 Ultraviolet's core trick is its service worker. Once registered, the worker sits between the browser and the network for every fetch issued within its scope — including subresources like images, scripts, and stylesheets — and rewrites each request URL through the proxy so the target site never sees the browser's real origin. The app's frontend code in `public/register-sw.js` and `public/index.js` manages the full lifecycle: registration, error reporting, transport initialisation, and iframe navigation.

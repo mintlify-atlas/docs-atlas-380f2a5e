@@ -1,7 +1,7 @@
 ---
 title: "One-Click Platform Deployments for Ultraviolet App"
 sidebarTitle: "Platforms"
-description: "Deploy Ultraviolet App to Replit, Railway, or Koyeb with one click, or use a terminal on any VPS or cloud server."
+description: "Deploy Ultraviolet App to Replit, Railway, or Koyeb with one click, or run it on any VPS via terminal. All platforms provide HTTPS for service workers."
 ---
 
 Ultraviolet App includes platform metadata files (`app.json`, `.replit`) that enable zero-configuration one-click deploys on several hosting services. Whether you prefer a managed platform or want full control on your own server, the application exposes a single `PORT` environment variable and requires no build step beyond `npm install` (or `pnpm install`).
@@ -25,6 +25,8 @@ Ultraviolet App includes platform metadata files (`app.json`, `.replit`) that en
 
     [nix]
     channel = "stable-25_11"
+
+    [debugger]
 
     [unitTest]
     language = "nodejs"

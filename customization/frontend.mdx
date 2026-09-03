@@ -1,7 +1,7 @@
 ---
-title: "Customising the Ultraviolet App Frontend"
+title: "Customising the Ultraviolet App Frontend UI and Layout"
 sidebarTitle: "Frontend"
-description: "Replace or extend the default Ultraviolet App UI by editing files in the public/ directory. Covers HTML structure, CSS variables, JavaScript hooks, and adding new pages."
+description: "Replace or extend the Ultraviolet App UI by editing files in public/. Covers required element IDs, CSS rules, JavaScript hooks, and adding new pages."
 ---
 
 The entire user-facing interface lives inside the `public/` directory. The Express server mounts this directory first — before any of the vendor UV files — so any file you place there takes priority over the upstream library assets. This means you can override `uv.config.js`, add new pages, or replace every visual element without touching `node_modules` or the server entry point.
@@ -77,6 +77,35 @@ The key files you will interact with are:
   Do **not** remove `#uv-frame`. `index.js` sets `frame.style.display = "block"` and writes to `frame.src` on every form submission. If the element is missing, the proxy will throw a runtime error and the user will see a blank page.
 </Warning>
 
+## Script loading order
+
+`index.html` loads scripts in a specific order that satisfies runtime dependencies between them. The three `<head>` scripts must load before the DOM is parsed so that `BareMux`, `__uv$config`, and `Ultraviolet` globals are available by the time the body scripts run. The three `<body>` scripts at the closing `</body>` tag run after the DOM is fully built.
+
+```html public/index.html
+<!-- <head> — must load before body scripts -->
+<script src="baremux/index.js"></script>
+<script src="uv/uv.bundle.js"></script>
+<script src="uv/uv.config.js"></script>
+
+<!-- end of <body> — executed after DOM is ready -->
+<script src="register-sw.js"></script>
+<script src="search.js"></script>
+<script src="index.js"></script>
+```
+
+| Script | Location | Provides |
+|---|---|---|
+| `baremux/index.js` | `<head>` | `BareMux` global (transport abstraction) |
+| `uv/uv.bundle.js` | `<head>` | `Ultraviolet` global and codec utilities |
+| `uv/uv.config.js` | `<head>` | `__uv$config` global (prefix, encode/decode, handler paths) |
+| `register-sw.js` | body end | `registerSW()` utility function |
+| `search.js` | body end | `search()` URL resolution function |
+| `index.js` | body end | Form submit handler — depends on all of the above |
+
+<Warning>
+  Do **not** reorder these scripts. `index.js` calls `BareMux.BareMuxConnection`, `__uv$config.encodeUrl`, `registerSW()`, and `search()` — all of which must already be defined when the script executes. Moving any dependency below `index.js` will cause a `ReferenceError` at runtime.
+</Warning>
+
 ## CSS fundamentals
 
 `index.css` sets the core visual language. Three rules are especially important to understand before you start customising:
@@ -126,10 +155,11 @@ Key points:
 
 ### Changing the colour scheme
 
-Because the stylesheet uses literal hex values rather than CSS custom properties, the simplest way to theme the app is to add your own variables to `:root` and reference them:
+The stylesheet uses mostly literal hex values for colours. The one exception is `#uv-address`, which references `var(--text-color)` — a custom property not defined in `index.css` itself, meaning it inherits `unset` unless you define it on `:root`. The simplest way to theme the app is to define your own custom properties and reference them throughout:
 
 ```css public/index.css  (additions)
 :root {
+  --text-color: #fff;
   --bg: #1a1a2e;
   --accent: #e94560;
   --input-border: rgba(233, 69, 96, 0.4);

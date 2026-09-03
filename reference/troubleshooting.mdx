@@ -192,6 +192,32 @@ server.listen({
 
 </Accordion>
 
+<Accordion title="Graceful shutdown: SIGTERM or SIGINT not stopping the process cleanly">
+
+When deploying behind a process manager (systemd, Docker, PM2, Kubernetes), the process may not stop cleanly on shutdown signals, leaving port bindings held open or connections abruptly dropped. The server in `src/index.js` registers handlers for both `SIGINT` (Ctrl-C) and `SIGTERM` (the default signal sent by `docker stop`, `kill`, and most orchestrators):
+
+```js
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+function shutdown() {
+  console.log("SIGTERM signal received: closing HTTP server");
+  server.close();
+  process.exit(0);
+}
+```
+
+`server.close()` stops accepting new connections while letting existing requests finish. The process then exits with code `0`.
+
+**If the process does not stop cleanly:**
+
+- Confirm the runtime is sending `SIGTERM` (not `SIGKILL`). `SIGKILL` cannot be caught and bypasses the handler entirely — this is normal behaviour but means in-flight requests will be dropped.
+- In Docker, `docker stop` sends `SIGTERM` and waits for a grace period (default 10 seconds) before escalating to `SIGKILL`. If the server has long-lived WebSocket connections (Wisp), they will be cut at the `SIGKILL` boundary.
+- When running with `node src/index.js` directly, pressing `Ctrl-C` sends `SIGINT`, which the handler also captures.
+- Do **not** wrap the start command in a shell script without `exec`. A shell process that does not forward signals will swallow `SIGTERM` and the Node.js process will never receive it. Use `exec node src/index.js` or use the array form in the Dockerfile `CMD` (already correct: `CMD ["src/index.js"]`).
+
+</Accordion>
+
 <Accordion title="Docker container exits immediately">
 
 Running `docker compose up` or `docker run` causes the container to start and then exit with a non-zero code. Common causes:

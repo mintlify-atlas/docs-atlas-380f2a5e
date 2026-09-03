@@ -1,7 +1,7 @@
 ---
-title: "Environment Variables and Server Configuration"
+title: "Environment Variables, Headers, and Graceful Shutdown"
 sidebarTitle: "Environment"
-description: "Configure the Ultraviolet App server with environment variables. Set the listening port, understand COOP/COEP security headers, and review the graceful shutdown behavior."
+description: "Configure Ultraviolet App with PORT and NODE_ENV. Covers COOP/COEP security headers, port resolution, startup logging, and SIGINT/SIGTERM shutdown hooks."
 ---
 
 The Ultraviolet App server is configured primarily through a small set of environment variables read at startup. The server entry point is `src/index.js`, which creates a plain Node.js `http.Server`, attaches the Express application as its request handler, and adds a Wisp WebSocket upgrade handler alongside it. Understanding the startup sequence — port resolution, security header injection, and shutdown hooks — helps you deploy the app reliably in any environment that can run Node.js 24 or later.
@@ -51,6 +51,25 @@ The Ultraviolet App server is configured primarily through a small set of enviro
   ```yaml title="docker-compose.yml excerpt"
   environment:
     - PORT=3000
+  ```
+</ParamField>
+
+<ParamField path="NODE_ENV" type="string">
+  Sets the Node.js runtime environment mode. The Dockerfile ships this
+  variable pre-set to `production`, which causes Express and many npm packages
+  to enable production-optimised behaviour (minified error messages, disabled
+  dev-only middleware, etc.).
+
+  ```dockerfile title="Dockerfile"
+  ENV NODE_ENV=production
+  ```
+
+  When running locally outside Docker the variable is not set automatically.
+  If you need to replicate production behaviour during local testing, pass it
+  on the command line:
+
+  ```bash
+  NODE_ENV=production node src/index.js
   ```
 </ParamField>
 

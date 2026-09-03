@@ -51,6 +51,17 @@ The server itself never reads or modifies proxied content — all rewriting happ
   Firefox will not load the site without a valid SSL certificate. Service workers are only permitted on `http://` for `localhost` and `127.0.0.1`. Use a Chromium-based browser when testing locally without HTTPS.
 </Warning>
 
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8080` | TCP port the HTTP server binds to. Must be a valid integer; any non-integer value falls back to `8080`. |
+| `NODE_ENV` | _(unset)_ | Set to `production` by the Dockerfile. Enables production optimisations in Express and suppresses development warnings. |
+
+## Graceful Shutdown
+
+The server registers handlers for both `SIGINT` (Ctrl+C) and `SIGTERM` (sent by Docker, systemd, and most process managers on stop). On either signal, the `shutdown()` function is called: it logs a message, closes the HTTP server with `server.close()`, and exits the process with code `0`. This ensures in-flight requests are allowed to finish and connections are drained cleanly before the process terminates.
+
 ## License
 
 Ultraviolet App is released under the **GPL-3.0-or-later** license, as declared in `package.json`. Review the terms before deploying publicly or incorporating the code into another project.

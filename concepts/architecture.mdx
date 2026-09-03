@@ -1,7 +1,7 @@
 ---
-title: "Ultraviolet App Architecture and Request Flow"
+title: "Ultraviolet App Architecture: Server and Request Flow"
 sidebarTitle: "Architecture"
-description: "How the Ultraviolet App server, service worker, and transports work together to proxy web requests through a Node.js Express backend."
+description: "How the Ultraviolet App server, service worker, and transports work together to proxy web requests through a Node.js Express 5 backend."
 ---
 
 Ultraviolet App is a thin but carefully structured Node.js application that stitches together four independent components — an Express 5 HTTP server, a browser-side service worker, the BareMux transport abstraction, and a Wisp WebSocket tunnel — into a single coherent proxy pipeline. Understanding how these pieces fit together will make it much easier to customise, debug, or extend the application.
@@ -10,7 +10,7 @@ Ultraviolet App is a thin but carefully structured Node.js application that stit
 
 Every proxied page follows the same path from the moment a user submits a URL to the moment the rewritten response appears in the embedded iframe.
 
-```
+```text
 Browser (form submit)
   │
   ▼
@@ -113,12 +113,21 @@ Only connections whose URL ends with `/wisp/` are accepted and handed to `wisp-s
 
 ## Port and process lifecycle
 
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8080` | TCP port the HTTP server listens on. Any non-integer value is treated as absent and falls back to `8080`. |
+| `NODE_ENV` | `production` (Docker) | Set to `production` in the official `Dockerfile`. Controls Express behaviour and is used by tooling to enable production optimisations. Not read directly in `src/index.js` but respected by Express and downstream packages. |
+
 The server reads its port from the `PORT` environment variable, defaulting to `8080` if the variable is absent or not a valid integer:
 
 ```js
 let port = parseInt(process.env.PORT || "");
 if (isNaN(port)) port = 8080;
 ```
+
+### Graceful shutdown
 
 Graceful shutdown is handled for both `SIGINT` (Ctrl-C) and `SIGTERM` (container stop):
 
@@ -132,6 +141,8 @@ function shutdown() {
   process.exit(0);
 }
 ```
+
+Both signals call the same `shutdown` function, which closes the HTTP server (stopping it from accepting new connections) and then exits the process. This ensures in-flight requests are not abruptly dropped when a container orchestrator stops the container.
 
 <Tip>
 When deploying behind a reverse proxy such as Nginx or Caddy, set `PORT` to a high-numbered port (e.g. `3000`) and let the reverse proxy handle TLS termination. The Wisp WebSocket path (`/wisp/`) must be proxied as a WebSocket connection — make sure your reverse proxy configuration includes `Upgrade` and `Connection` headers.

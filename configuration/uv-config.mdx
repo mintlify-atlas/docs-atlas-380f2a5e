@@ -1,7 +1,7 @@
 ---
-title: "Ultraviolet Config: Prefix, Codec, and SW Paths"
+title: "Ultraviolet Config: Prefix, Codec, and Asset Paths"
 sidebarTitle: "UV Config"
-description: "Configure the Ultraviolet service worker by editing uv.config.js. Set the proxy prefix, URL encoding codec, and paths to the handler, client, bundle, and SW files."
+description: "Configure the Ultraviolet service worker via uv.config.js. Set the proxy prefix, URL codec, and paths to the handler, client, bundle, and SW scripts."
 ---
 
 The `public/uv/uv.config.js` file is the single source of truth for how the Ultraviolet service worker behaves at runtime. It assigns a plain object to the global `self.__uv$config`, which the service worker reads when it intercepts a navigation request. Because this file lives inside `public/`, it takes precedence over the stock config shipped by the `@titaniumnetwork-dev/ultraviolet` package — the Express server mounts the package files under `/uv/` *after* the public directory, so your edits always win.

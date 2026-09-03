@@ -1,5 +1,5 @@
 ---
-title: "BareMux: Pluggable Transport Abstraction for UV"
+title: "BareMux: Pluggable Transport Abstraction for Ultraviolet"
 sidebarTitle: "BareMux"
 description: "BareMux is the transport abstraction layer used by Ultraviolet. It lets you swap HTTP backends (Epoxy, Curl, Bare) without changing proxy logic."
 ---
@@ -73,7 +73,7 @@ The options parameter is an **array**, not a plain object. EpoxyTransport receiv
 
 Once a transport is set, the Ultraviolet service worker (`/uv/sw.js`) uses BareMux's fetch-like interface to make upstream requests. From the service worker's perspective there is no EpoxyTransport, no Wisp, and no WebSocket — it just calls into BareMux and receives a `Response`. This separation of concerns is what makes UV's rewriting logic transport-agnostic.
 
-```
+```text
 Service Worker (uv.sw.js)
   │  fetch(rewrittenRequest)
   ▼

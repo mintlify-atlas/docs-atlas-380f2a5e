@@ -41,7 +41,7 @@ Node.js **24 or later** is required. The `engines` field in `package.json` enfor
 
 Node 24 is also the minimum required for Corepack to be reliably available without a separate global install step. If you are on an older Node version you will need to upgrade before `pnpm install` will work correctly.
 
-The Docker image uses `node:lts-alpine`, which will track the current LTS release. As of the time of writing, Node 22 is LTS; if the LTS base image ever lags behind the `>=24.0.0` requirement you may need to pin the Dockerfile to a specific version tag such as `node:24-alpine`.
+The Docker image uses `node:lts-alpine`, which tracks the current LTS release. Because the `engines` field requires `>=24.0.0`, you should verify that the LTS base image resolves to Node 24 or later. If the LTS tag ever lags behind that requirement, pin the Dockerfile to an explicit version tag such as `node:24-alpine` to ensure the constraint is satisfied.
 
 </Accordion>
 
@@ -181,19 +181,26 @@ For bug reports or code questions specifically about the Ultraviolet core librar
 
 <Accordion title="What license is Ultraviolet App under?">
 
-Ultraviolet App is licensed under the **GNU General Public License v3.0 or later (GPL-3.0-or-later)**. This is declared in `package.json`:
+There is a discrepancy between the two authoritative sources in the repository, and you should be aware of it before deploying or redistributing the project.
+
+**`package.json` declares `GPL-3.0-or-later`:**
 
 ```json
 "license": "GPL-3.0-or-later"
 ```
 
-The GPL-3.0 is a strong copyleft license. Key implications for deployers:
+**The `LICENSE` file contains the full text of the GNU Affero General Public License v3.0 (AGPL-3.0).**
+
+GPL-3.0 and AGPL-3.0 are related but distinct licenses. The key difference is that AGPL-3.0 adds a **network use clause** (section 13): if you run a modified version of the software on a publicly accessible server and users interact with it over a network, you must provide those users with access to the modified source code. GPL-3.0 does not impose this requirement for network services.
+
+Because the `LICENSE` file is the primary legal artifact, the AGPL-3.0 terms are most likely what govern the software in practice. If this distinction matters for your deployment or redistribution scenario, consult the full text of the `LICENSE` file and, if necessary, seek independent legal advice. Do not rely solely on the SPDX identifier in `package.json`.
+
+Key implications for **AGPL-3.0** deployers:
 
 - You may use, modify, and self-host the software freely.
-- If you distribute a modified version (including as a network service under some interpretations), you must make your source code available under the same license.
+- If you deploy a **modified** version as a publicly accessible network service, you must make your modified source code available to the users of that service.
+- Distributing an **unmodified** deployment does not require publishing source code, though making it available is good practice.
 - The license does **not** restrict personal or internal use.
-
-Review the `LICENSE` file in the repository for the full license text before incorporating Ultraviolet App into a commercial or redistributed product.
 
 </Accordion>
 
