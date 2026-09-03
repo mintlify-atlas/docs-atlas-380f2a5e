@@ -1,20 +1,62 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Ultraviolet App: Production-Ready Web Proxy"
+sidebarTitle: "Home"
+description: "Ultraviolet App is a deployable Node.js bundle that runs the Ultraviolet web proxy with service workers, encrypted transports, and WebSocket tunneling."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+Ultraviolet App is an all-in-one, production-ready deployment of [Ultraviolet](https://github.com/titaniumnetwork-dev/Ultraviolet) — a sophisticated web proxy that rewrites pages through a service worker to evade internet censorship. Drop it on any Node.js host, a Docker container, or a one-click platform and your users can browse the web freely within seconds.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get Ultraviolet running locally in under five minutes with pnpm or npm.
+  </Card>
+  <Card title="Deploy with Docker" icon="docker" href="/deployment/docker">
+    Build and run a production container with Docker or Docker Compose.
+  </Card>
+  <Card title="Platform Deploys" icon="cloud" href="/deployment/platforms">
+    One-click deploy to Replit, Railway, and Koyeb with zero config.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/uv-config">
+    Customise the UV prefix, URL codec, and service-worker paths.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What's included
+
+Ultraviolet App bundles everything you need to run a full proxy in production:
+
+- **Ultraviolet core** — service-worker URL rewriter served at `/uv/`
+- **EpoxyTransport** — encrypted HTTP transport served at `/epoxy/`
+- **BareMux** — pluggable transport abstraction served at `/baremux/`
+- **Wisp WebSocket tunnel** — low-latency WebSocket proxy at `/wisp/`
+- **Express 5 server** — static asset serving with COOP/COEP security headers
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand how the server, service worker, and transports fit together.
+  </Card>
+  <Card title="HTTP Transports" icon="network-wired" href="/configuration/transports">
+    Switch between EpoxyTransport, CurlTransport, and the legacy Bare client.
+  </Card>
+  <Card title="Customise the Frontend" icon="paintbrush" href="/customization/frontend">
+    Replace the default UI with your own HTML, CSS, and JavaScript.
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/reference/troubleshooting">
+    Fix common issues with service workers, HTTPS, and transports.
+  </Card>
+</CardGroup>
+
+## Quick look
+
+```bash
+git clone https://github.com/titaniumnetwork-dev/Ultraviolet-App.git
+cd Ultraviolet-App
+pnpm install
+pnpm start
+```
+
+Open [http://localhost:8080](http://localhost:8080) and start browsing.
+
+<Note>
+  Firefox requires a valid SSL certificate to register service workers. Use a Chromium-based browser when testing on `localhost`.
+</Note>

@@ -1,0 +1,201 @@
+---
+title: "Configuring the Default Search Engine in Ultraviolet"
+sidebarTitle: "Search Engine"
+description: "Change the fallback search engine used when Ultraviolet can't parse user input as a URL. Edit the hidden uv-search-engine input or modify search.js."
+---
+
+When a user types something into the address bar that cannot be resolved as a valid URL, Ultraviolet falls back to a configurable search engine template. The fallback is driven by two cooperating pieces: a hidden `<input>` in `index.html` that holds the template string, and the `search()` function in `search.js` that applies it. Changing the default search engine requires editing one HTML attribute; building a custom resolution strategy requires editing the function itself.
+
+## How URL resolution works
+
+The `search()` function in `public/search.js` accepts the raw user input and the search engine template string, then returns a fully qualified URL. It tries three strategies in order, returning as soon as one succeeds:
+
+```js public/search.js
+"use strict";
+/**
+ *
+ * @param {string} input
+ * @param {string} template Template for a search query.
+ * @returns {string} Fully qualified URL
+ */
+function search(input, template) {
+  try {
+    // input is a valid URL:
+    // eg: https://example.com, https://example.com/test?q=param
+    return new URL(input).toString();
+  } catch (err) {
+    // input was not a valid URL
+  }
+
+  try {
+    // input is a valid URL when http:// is added to the start:
+    // eg: example.com, https://example.com/test?q=param
+    const url = new URL(`http://${input}`);
+    // only if the hostname has a TLD/subdomain
+    if (url.hostname.includes(".")) return url.toString();
+  } catch (err) {
+    // input was not valid URL
+  }
+
+  // input may have been a valid URL, however the hostname was invalid
+
+  // Attempts to convert the input to a fully qualified URL have failed
+  // Treat the input as a search query
+  return template.replace("%s", encodeURIComponent(input));
+}
+```
+
+The three resolution steps are:
+
+| Step | What it tries | Example inputs that match |
+|---|---|---|
+| **1. Strict URL parse** | `new URL(input)` — succeeds only if `input` is already a fully qualified URL | `https://example.com`, `ftp://files.example.com/doc.pdf` |
+| **2. Implicit HTTP** | `new URL('http://' + input)` — succeeds if prepending `http://` makes it valid **and** the hostname contains a dot | `example.com`, `en.wikipedia.org/wiki/Proxy` |
+| **3. Search fallback** | Inserts the URL-encoded input into the template at `%s` | `hello world`, `best VPN`, `what is a proxy` |
+
+<Note>
+  The dot check in step 2 (`url.hostname.includes(".")`) is intentional. Without it, bare words like `localhost` or `intranet` would be treated as direct URLs rather than search queries. Only hostnames with at least one dot are assumed to be domain names.
+</Note>
+
+## The `%s` placeholder
+
+The template string uses `%s` as the placeholder for the search query. When the fallback path is taken, `search()` calls `encodeURIComponent(input)` on the raw user text before substituting it:
+
+```js
+return template.replace("%s", encodeURIComponent(input));
+```
+
+`encodeURIComponent` converts spaces to `%20` and escapes all characters that are not valid in a URL query string. The `%s` itself is **not** a URL-encoded character — it is a literal two-character placeholder that you write directly into the template value.
+
+## The hidden search engine input
+
+The template string is stored in a `type="hidden"` input inside the proxy form in `index.html`. `index.js` reads `searchEngine.value` from this element and passes it to `search()` on every form submission:
+
+```html public/index.html
+<form id="uv-form" class="flex-center">
+  <input
+    id="uv-search-engine"
+    value="https://www.google.com/search?q=%s"
+    type="hidden"
+  />
+  <input id="uv-address" type="text" placeholder="Search the web freely" />
+</form>
+```
+
+To change the default search engine, update the `value` attribute of `#uv-search-engine`. The change takes effect on the next page load — no server restart is required.
+
+## Switching search engines
+
+The following examples show the correct template values for common search engines. Replace the `value` attribute in `public/index.html` with whichever you prefer.
+
+<CodeGroup>
+
+```html Google
+<input
+  id="uv-search-engine"
+  value="https://www.google.com/search?q=%s"
+  type="hidden"
+/>
+```
+
+```html DuckDuckGo
+<input
+  id="uv-search-engine"
+  value="https://duckduckgo.com/?q=%s"
+  type="hidden"
+/>
+```
+
+```html Bing
+<input
+  id="uv-search-engine"
+  value="https://www.bing.com/search?q=%s"
+  type="hidden"
+/>
+```
+
+```html Brave Search
+<input
+  id="uv-search-engine"
+  value="https://search.brave.com/search?q=%s"
+  type="hidden"
+/>
+```
+
+```html Startpage
+<input
+  id="uv-search-engine"
+  value="https://www.startpage.com/search?q=%s"
+  type="hidden"
+/>
+```
+
+</CodeGroup>
+
+<Tip>
+  To verify a template before deploying, paste it into your browser address bar and manually replace `%s` with a test query. If the resulting URL loads the expected search results page, the template is correct.
+</Tip>
+
+## Letting users choose their own engine
+
+Because the template is read from a DOM element at submit time, you can replace the hidden input with a visible `<select>` and update `#uv-search-engine`'s value dynamically — or remove the hidden input entirely and write the selected value directly into the `searchEngine` variable in `index.js`.
+
+Here is a minimal example using a `<select>` that keeps the existing `index.js` logic unchanged:
+
+```html public/index.html
+<form id="uv-form" class="flex-center">
+  <!-- Keep the hidden input; its value will be overwritten by the select handler -->
+  <input
+    id="uv-search-engine"
+    value="https://www.google.com/search?q=%s"
+    type="hidden"
+  />
+  <input id="uv-address" type="text" placeholder="Search the web freely" />
+</form>
+
+<!-- Engine picker outside the form so it doesn't submit -->
+<select id="engine-picker">
+  <option value="https://www.google.com/search?q=%s">Google</option>
+  <option value="https://duckduckgo.com/?q=%s">DuckDuckGo</option>
+  <option value="https://www.bing.com/search?q=%s">Bing</option>
+</select>
+
+<script>
+  document.getElementById("engine-picker").addEventListener("change", (e) => {
+    document.getElementById("uv-search-engine").value = e.target.value;
+  });
+</script>
+```
+
+<Warning>
+  If you remove the `#uv-search-engine` element without updating `index.js`, `searchEngine.value` will be `undefined` and the `template.replace("%s", ...)` call inside `search()` will throw a `TypeError` at runtime. Either keep the element or update `index.js` to source the template from somewhere else.
+</Warning>
+
+## Modifying the resolution logic
+
+If you need different resolution behaviour — for example, treating single-word inputs as `.com` shortcuts, or supporting custom URI schemes — edit `search.js` directly. The function is a plain synchronous utility with no external dependencies, so it is easy to extend:
+
+```js public/search.js  (custom extension example)
+function search(input, template) {
+  // Custom: treat bare single words with no spaces as .com shortcuts
+  // e.g. "github" → "http://github.com"
+  if (!input.includes(" ") && !input.includes(".") && !input.includes("/")) {
+    return `http://${input}.com`;
+  }
+
+  try {
+    return new URL(input).toString();
+  } catch (err) {}
+
+  try {
+    const url = new URL(`http://${input}`);
+    if (url.hostname.includes(".")) return url.toString();
+  } catch (err) {}
+
+  return template.replace("%s", encodeURIComponent(input));
+}
+```
+
+<Note>
+  `search.js` is loaded as a classic script before `index.js`, so the `search` function is available globally when the form submit handler runs. If you add imports or convert it to an ES module, update the `<script>` tag in `index.html` to add `type="module"` and adjust `index.js` accordingly.
+</Note>

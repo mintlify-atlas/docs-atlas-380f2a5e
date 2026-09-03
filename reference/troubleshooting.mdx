@@ -1,0 +1,285 @@
+---
+title: "Troubleshooting Ultraviolet App: Common Issues Fixed"
+sidebarTitle: "Troubleshooting"
+description: "Diagnose and fix common Ultraviolet App problems including service worker failures, HTTPS requirements, blank iframes, WebSocket errors, and port conflicts."
+---
+
+When running Ultraviolet App in development or production, a handful of issues appear consistently across different environments. The sections below walk through each problem, explain why it occurs based on the server and client code, and provide a concrete fix you can apply immediately.
+
+<AccordionGroup>
+
+<Accordion title="Service worker won't register on Firefox">
+
+Firefox enforces a strict rule: service workers may only be registered from a secure context. A secure context is either `https://` with a valid certificate, or `http://localhost` / `http://127.0.0.1`. Any other `http://` origin — such as a LAN IP address or a staging domain without SSL — will cause `navigator.serviceWorker` to be unavailable and registration to fail silently or throw.
+
+The `register-sw.js` script encodes this rule directly:
+
+```js
+const swAllowedHostnames = ["localhost", "127.0.0.1"];
+
+async function registerSW() {
+  if (!navigator.serviceWorker) {
+    if (
+      location.protocol !== "https:" &&
+      !swAllowedHostnames.includes(location.hostname)
+    )
+      throw new Error("Service workers cannot be registered without https.");
+
+    throw new Error("Your browser doesn't support service workers.");
+  }
+
+  await navigator.serviceWorker.register(stockSW);
+}
+```
+
+**Fixes:**
+
+- **Local development:** Use Chromium-based browsers (`chrome`, `edge`, `brave`) instead of Firefox. Chromium allows service workers on `http://localhost` without any additional configuration.
+- **Production / staging:** Deploy behind a reverse proxy (nginx, Caddy, Cloudflare) that terminates TLS and presents a valid certificate. Once the origin is `https://`, Firefox will register the service worker normally.
+- **Self-signed certs:** Firefox does not accept self-signed certificates for service worker contexts by default. Use a trusted certificate authority (e.g. Let's Encrypt) or a tool like [mkcert](https://github.com/FiloSottile/mkcert) to generate a locally-trusted cert.
+
+</Accordion>
+
+<Accordion title="Blank proxy iframe — page doesn't load">
+
+After submitting a URL, the `uv-frame` iframe appears but stays blank. The most common cause is that the service worker was never registered, so requests for paths under `/uv/service/` are never intercepted and fall through to the Express 404 handler.
+
+Look for this message in your browser's DevTools console:
+
+```
+Error: The service worker is not registered.
+```
+
+The `error.js` script on the 404 page detects when the current path begins with the UV service prefix and surfaces a **Register ServiceWorker** button:
+
+```js
+if (location.pathname.startsWith(__uv$config.prefix)) {
+  error.textContent = "Error: The service worker is not registered.";
+  registerButton.classList.add("show");
+}
+```
+
+**Fixes:**
+
+1. Open DevTools → **Application** → **Service Workers** and confirm a worker is registered for your origin. If the list is empty, the registration call failed.
+2. Navigate to any path that begins with `/uv/service/` (or reload the 404 page) and click the **Register ServiceWorker** button. The button calls `registerSW()` and then reloads the page.
+3. If registration still fails, check the DevTools **Console** tab for the exact error. Common causes are the HTTPS requirement (see above) or the browser not supporting service workers at all.
+4. Hard-refresh (`Ctrl+Shift+R` / `Cmd+Shift+R`) after registration to ensure the worker activates and takes control of the page.
+
+<Note>
+The `index.js` form handler also calls `registerSW()` before navigating the iframe. If that call throws, the error message is shown inline on the home page and navigation is aborted.
+</Note>
+
+</Accordion>
+
+<Accordion title="Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy errors">
+
+You may see errors in the DevTools console such as:
+
+```
+Cross-Origin-Embedder-Policy requires cross-origin resources to be opt-in
+SharedArrayBuffer is not defined
+```
+
+These are not bugs — they are the result of intentional response headers set in `src/index.js`:
+
+```js
+server.on("request", (req, res) => {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+  app(req, res);
+});
+```
+
+`COOP: same-origin` and `COEP: require-corp` together enable a **cross-origin isolated** browsing context, which is required to use `SharedArrayBuffer`. EpoxyTransport relies on `SharedArrayBuffer` for its WebAssembly-based encrypted transport layer. Removing these headers will break EpoxyTransport.
+
+**Fixes:**
+
+- **If a sub-resource fails to load** with a COEP error, the resource itself must serve either a `Cross-Origin-Resource-Policy: cross-origin` header or a `CORS` header (`Access-Control-Allow-Origin: *`). Resources you control (your own static files) are already same-origin and are unaffected.
+- **If you are embedding Ultraviolet App in an outer frame**, the parent page must also set compatible COOP/COEP headers. This is typically not a supported configuration.
+- **Do not remove these headers** unless you are switching away from EpoxyTransport entirely, as doing so will silently break the transport layer.
+
+</Accordion>
+
+<Accordion title="WebSocket connection refused at /wisp/">
+
+Attempts to open a WebSocket to `/wisp/` fail with a connection error, or the socket closes immediately with no response. The upgrade handler in `src/index.js` is strict about path matching:
+
+```js
+server.on("upgrade", (req, socket, head) => {
+  if (req.url.endsWith("/wisp/")) {
+    wisp.routeRequest(req, socket, head);
+    return;
+  }
+  socket.end();
+});
+```
+
+Any WebSocket upgrade request whose URL does **not** end with `/wisp/` is terminated immediately by `socket.end()`. This includes paths like `/wisp`, `/wisp/anything`, or `/ws/`.
+
+**Fixes:**
+
+- Confirm the Wisp URL in the frontend is constructed correctly. In `public/index.js` it is built as:
+
+  ```js
+  let wispUrl =
+    (location.protocol === "https:" ? "wss" : "ws") +
+    "://" +
+    location.host +
+    "/wisp/";
+  ```
+
+  The trailing slash is required.
+
+- If you are connecting from a custom client, make sure the WebSocket URL ends with `/wisp/` exactly.
+- If you have a reverse proxy in front of the app (nginx, Caddy, etc.), ensure it is configured to proxy WebSocket upgrades and does not strip or rewrite the path. A missing `Upgrade` header passthrough is a common source of failures.
+- Check that the server is actually running and listening on the expected port before trying to connect.
+
+<Warning>
+If a reverse proxy terminates WebSocket connections without forwarding them, the client will receive an HTTP 200 or 404 response instead of a 101 Switching Protocols, which can be difficult to diagnose without network-level inspection.
+</Warning>
+
+</Accordion>
+
+<Accordion title="Port already in use (EADDRINUSE)">
+
+Starting the server prints an error like:
+
+```
+Error: listen EADDRINUSE: address already in use :::8080
+```
+
+By default the server listens on port `8080`. This is set in `src/index.js`:
+
+```js
+let port = parseInt(process.env.PORT || "");
+
+if (isNaN(port)) port = 8080;
+
+server.listen({
+  port,
+});
+```
+
+**Fixes:**
+
+- Change the port using the `PORT` environment variable:
+
+  ```bash
+  PORT=3001 pnpm start
+  ```
+
+- Find and stop the conflicting process:
+
+  ```bash
+  # Linux / macOS
+  lsof -i :8080
+  kill -9 <PID>
+
+  # Windows
+  netstat -ano | findstr :8080
+  taskkill /PID <PID> /F
+  ```
+
+- When using Docker Compose, update the port mapping in `docker-compose.yml`:
+
+  ```yaml
+  ports:
+    - "3001:8080"
+  ```
+
+  This maps host port `3001` to the container's internal port `8080` without changing the app configuration.
+
+</Accordion>
+
+<Accordion title="Docker container exits immediately">
+
+Running `docker compose up` or `docker run` causes the container to start and then exit with a non-zero code. Common causes:
+
+**Missing native build tools.** Some npm/pnpm dependencies include native addons that must be compiled during `pnpm install`. The Dockerfile explicitly installs the required Alpine build tools before running `pnpm install`:
+
+```dockerfile
+FROM node:lts-alpine
+
+RUN apk add --upgrade --no-cache python3 make g++
+
+RUN npm install --global corepack@latest
+
+COPY package.json /app/package.json
+COPY pnpm-lock.yaml /app/pnpm-lock.yaml
+
+RUN corepack install
+RUN pnpm install
+```
+
+If you have modified the Dockerfile and removed the `apk add` line, native modules will fail to build and the process will crash on startup.
+
+**Fixes:**
+
+- Restore the `apk add --upgrade --no-cache python3 make g++` line before the `pnpm install` step.
+- If the container exits after starting (not during build), check logs with:
+
+  ```bash
+  docker compose logs ultraviolet
+  # or
+  docker logs <container_id>
+  ```
+
+- Ensure `pnpm-lock.yaml` is present in the build context. The Dockerfile copies it explicitly — if it is missing (e.g. added to `.dockerignore`), the build will fail.
+- Rebuild the image cleanly after any dependency changes:
+
+  ```bash
+  docker compose build --no-cache
+  docker compose up
+  ```
+
+</Accordion>
+
+<Accordion title="pnpm install fails — corepack not found">
+
+Running `pnpm install` throws:
+
+```
+corepack: command not found
+```
+
+or
+
+```
+This project requires pnpm@10.28.0, but the currently active package manager is npm@...
+```
+
+The `package.json` declares `"packageManager": "pnpm@10.28.0"`, which means Node's [Corepack](https://nodejs.org/api/corepack.html) must be available and active to resolve and run the correct pnpm version.
+
+**Fix:**
+
+Corepack ships with Node.js but must be enabled. On Node < 24 it may not be active by default. Install and enable it:
+
+```bash
+npm install --global corepack@latest
+corepack enable
+```
+
+Then re-run:
+
+```bash
+pnpm install
+```
+
+<Note>
+The Dockerfile already handles this — it runs `npm install --global corepack@latest` and `corepack install` before `pnpm install`. This fix is only needed for local development on machines running older Node.js versions.
+</Note>
+
+The `engines` field in `package.json` requires Node ≥ 24:
+
+```json
+"engines": {
+  "node": ">=24.0.0"
+}
+```
+
+If you are on an older Node version, upgrade to Node 24 LTS before proceeding.
+
+</Accordion>
+
+</AccordionGroup>

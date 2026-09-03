@@ -1,0 +1,167 @@
+---
+title: "Service Workers in Ultraviolet: How URL Rewriting Works"
+sidebarTitle: "Service Workers"
+description: "Ultraviolet registers a service worker that intercepts every fetch request and rewrites URLs through the proxy prefix, enabling seamless transparent proxying."
+---
+
+Ultraviolet's core trick is its service worker. Once registered, the worker sits between the browser and the network for every fetch issued within its scope — including subresources like images, scripts, and stylesheets — and rewrites each request URL through the proxy so the target site never sees the browser's real origin. The app's frontend code in `public/register-sw.js` and `public/index.js` manages the full lifecycle: registration, error reporting, transport initialisation, and iframe navigation.
+
+## Service worker registration
+
+All registration logic lives in `public/register-sw.js` and is shared between `index.html` and `404.html`. The exported async function `registerSW()` performs two checks before calling the browser API:
+
+```js
+const stockSW = "/uv/sw.js";
+
+const swAllowedHostnames = ["localhost", "127.0.0.1"];
+
+async function registerSW() {
+  if (!navigator.serviceWorker) {
+    if (
+      location.protocol !== "https:" &&
+      !swAllowedHostnames.includes(location.hostname)
+    )
+      throw new Error("Service workers cannot be registered without https.");
+
+    throw new Error("Your browser doesn't support service workers.");
+  }
+
+  await navigator.serviceWorker.register(stockSW);
+}
+```
+
+<Steps>
+  <Step title="Check navigator.serviceWorker">
+    If the browser exposes no `serviceWorker` API at all, the function immediately throws with a human-readable message.
+  </Step>
+  <Step title="Enforce HTTPS (with local exceptions)">
+    If `navigator.serviceWorker` exists but the page is served over plain HTTP, registration is still blocked — unless the hostname is `localhost` or `127.0.0.1`. Those two hostnames are in `swAllowedHostnames` specifically to allow local development without a TLS certificate.
+  </Step>
+  <Step title="Register /uv/sw.js">
+    Calls `navigator.serviceWorker.register(stockSW)` where `stockSW = "/uv/sw.js"`. This file is the Ultraviolet service worker bundled by `@titaniumnetwork-dev/ultraviolet` and served at `/uv/` by the Express server.
+  </Step>
+</Steps>
+
+<Warning>
+Service workers are scoped to the path they are registered from. Because `/uv/sw.js` lives under `/uv/`, all proxied URLs must also start with `/uv/` (i.e. use the `/uv/service/` prefix) for the service worker to intercept them. Changing the `prefix` in `uv.config.js` to a path outside `/uv/` will break interception.
+</Warning>
+
+## URL encoding and the proxy prefix
+
+`public/uv/uv.config.js` defines `__uv$config`, the global configuration object read by both the service worker and the frontend:
+
+```js
+self.__uv$config = {
+  prefix: "/uv/service/",
+  encodeUrl: Ultraviolet.codec.xor.encode,
+  decodeUrl: Ultraviolet.codec.xor.decode,
+  handler: "/uv/uv.handler.js",
+  client: "/uv/uv.client.js",
+  bundle: "/uv/uv.bundle.js",
+  config: "/uv/uv.config.js",
+  sw: "/uv/uv.sw.js",
+};
+```
+
+When the form is submitted, `index.js` builds the proxied URL with a single expression:
+
+```js
+frame.src = __uv$config.prefix + __uv$config.encodeUrl(url);
+```
+
+`encodeUrl` is `Ultraviolet.codec.xor.encode` — a lightweight XOR cipher that obfuscates the target URL in the browser's address bar and in network logs without adding meaningful overhead. The service worker uses the matching `decodeUrl` (`Ultraviolet.codec.xor.decode`) to recover the original URL before making the upstream request.
+
+<Info>
+Ultraviolet ships additional codecs. You can replace the XOR codec with `Ultraviolet.codec.base64` by updating both `encodeUrl` and `decodeUrl` in `public/uv/uv.config.js`. The service worker and frontend must always use the same codec pair.
+</Info>
+
+## The iframe and form submit flow
+
+When the user submits the search form, `public/index.js` runs the following sequence:
+
+```js
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  try {
+    await registerSW();
+  } catch (err) {
+    error.textContent = "Failed to register service worker.";
+    errorCode.textContent = err.toString();
+    throw err;
+  }
+
+  const url = search(address.value, searchEngine.value);
+
+  let frame = document.getElementById("uv-frame");
+  frame.style.display = "block";
+  let wispUrl =
+    (location.protocol === "https:" ? "wss" : "ws") +
+    "://" +
+    location.host +
+    "/wisp/";
+  if ((await connection.getTransport()) !== "/epoxy/index.mjs") {
+    await connection.setTransport("/epoxy/index.mjs", [
+      { wisp: wispUrl },
+    ]);
+  }
+  frame.src = __uv$config.prefix + __uv$config.encodeUrl(url);
+});
+```
+
+<Steps>
+  <Step title="Prevent default form submission">
+    `event.preventDefault()` stops the browser from navigating away.
+  </Step>
+  <Step title="Attempt service worker registration">
+    `registerSW()` is called on every submit — it is idempotent because the browser deduplicates registrations for the same script URL.
+  </Step>
+  <Step title="Resolve the URL">
+    `search(address.value, searchEngine.value)` from `public/search.js` returns a fully qualified URL or falls back to a Google search query.
+  </Step>
+  <Step title="Ensure the transport is configured">
+    `connection.getTransport()` checks the currently active BareMux transport. If it is not already `/epoxy/index.mjs`, `connection.setTransport()` switches to EpoxyTransport and passes the Wisp WebSocket URL (`wss://host/wisp/` in production, `ws://host/wisp/` in development).
+  </Step>
+  <Step title="Navigate the iframe">
+    `#uv-frame` (hidden by default via `display: none` in `index.html`) is made visible and its `src` is set to the encoded proxy URL. The service worker intercepts the resulting fetch and all subsequent sub-resource fetches within the frame.
+  </Step>
+</Steps>
+
+## Error handling
+
+Registration failures are surfaced to the user through two DOM elements defined in `index.html`:
+
+```html
+<p id="uv-error"></p>
+<pre id="uv-error-code"></pre>
+```
+
+If `registerSW()` throws, `index.js` writes a friendly message to `#uv-error` and the raw error string to `#uv-error-code`, then re-throws so the rest of the submit handler is aborted.
+
+## The error page and the "Register ServiceWorker" button
+
+`public/404.html` is served for any unmatched route, including accidental direct navigation to a `/uv/service/…` path without an active service worker. `public/error.js` handles this case:
+
+```js
+if (location.pathname.startsWith(__uv$config.prefix)) {
+  error.textContent = "Error: The service worker is not registered.";
+  registerButton.classList.add("show");
+}
+
+registerButton.addEventListener("click", async () => {
+  try {
+    await registerSW();
+    location.reload();
+  } catch (err) {
+    error.textContent = "Failed to register service worker.";
+    errorCode.textContent = err.toString();
+    registerButton.classList.remove("show");
+  }
+});
+```
+
+If the current URL starts with `__uv$config.prefix` (`/uv/service/`), the script deduces that the service worker is not registered and reveals the "Register ServiceWorker" button (normally hidden). Clicking it calls `registerSW()` and then reloads the page — after which the service worker is active and can handle the proxied URL correctly.
+
+<Tip>
+This recovery mechanism is especially useful after a browser update clears service worker registrations, or when a user bookmarks a proxied URL and revisits it in a fresh browser session.
+</Tip>

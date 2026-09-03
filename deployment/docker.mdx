@@ -1,0 +1,154 @@
+---
+title: "Deploy Ultraviolet App with Docker and Compose"
+sidebarTitle: "Docker"
+description: "Build and run Ultraviolet App as a Docker container. Includes Dockerfile breakdown, docker-compose.yml usage, port mapping, and production restart policies."
+---
+
+Docker is the recommended path for production deployments. The repository ships a ready-to-use `Dockerfile` and `docker-compose.yml` that together produce a self-contained image based on Alpine Linux, install dependencies with pnpm, and start the Express server automatically. No extra configuration is required for a standard single-host setup.
+
+## The Dockerfile
+
+The build uses `node:lts-alpine` as a minimal base, installs the native build tools that some npm packages require (`python3`, `make`, `g++`), bootstraps pnpm via Corepack, and copies only the lockfile and `package.json` before running `pnpm install` — this keeps the layer cache valid when source files change but dependencies do not.
+
+```dockerfile Dockerfile
+FROM node:lts-alpine
+
+LABEL maintainer="TitaniumNetwork Ultraviolet Team"
+LABEL summary="Ultraviolet Proxy Image"
+LABEL description="Example application of Ultraviolet which can be deployed in production."
+
+ENV NODE_ENV=production
+WORKDIR /app
+
+RUN apk add --upgrade --no-cache python3 make g++
+
+RUN npm install --global corepack@latest
+
+COPY package.json /app/package.json
+COPY pnpm-lock.yaml /app/pnpm-lock.yaml
+
+RUN corepack install
+RUN pnpm install
+
+COPY . /app
+
+EXPOSE 8080
+
+ENTRYPOINT [ "node" ]
+CMD ["src/index.js"]
+```
+
+Key points:
+
+| Instruction | Effect |
+|---|---|
+| `ENV NODE_ENV=production` | Skips dev-dependency installation and enables production optimisations in Express. |
+| `WORKDIR /app` | All subsequent paths are relative to `/app` inside the container. |
+| `EXPOSE 8080` | Documents the default port; the actual binding is controlled by `docker run -p`. |
+| `ENTRYPOINT ["node"]` / `CMD ["src/index.js"]` | Splitting the command this way lets you override the script path at runtime without replacing the Node.js executable. |
+
+<Note>
+  The `COPY . /app` instruction runs **after** `pnpm install`, so a `.dockerignore` file should exclude `node_modules` and any local `.env` files to avoid polluting the image layer or overwriting the freshly-installed dependencies.
+</Note>
+
+## Building and Running with Plain Docker
+
+<Steps>
+  <Step title="Build the image">
+    From the repository root, build and tag the image:
+
+    ```bash
+    docker build -t ultraviolet-app .
+    ```
+  </Step>
+
+  <Step title="Run the container">
+    Start a container, mapping host port 8080 to container port 8080:
+
+    ```bash
+    docker run -p 8080:8080 ultraviolet-app
+    ```
+
+    The server prints its listening addresses to stdout, just as it does in the bare Node.js run.
+  </Step>
+
+  <Step title="Override the port (optional)">
+    Pass the `PORT` environment variable to make the server bind to a different port inside the container, then adjust the host mapping accordingly:
+
+    ```bash
+    docker run -e PORT=3000 -p 3000:3000 ultraviolet-app
+    ```
+  </Step>
+</Steps>
+
+## The docker-compose.yml
+
+For long-running deployments, Compose handles restart policies and network isolation automatically:
+
+```yaml docker-compose.yml
+services:
+  ultraviolet:
+    ports:
+      - 8080:8080
+    build:
+      context: .
+    container_name: ultraviolet
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ultraviolet
+```
+
+Notable configuration choices:
+
+- **`restart: unless-stopped`** — the container restarts automatically after a crash or host reboot, but stays stopped if you explicitly run `docker compose stop`.
+- **`build: context: .`** — Compose builds the image from the local `Dockerfile` rather than pulling from a registry. Replace with an `image:` key if you push the image to Docker Hub or a private registry.
+- **`networks.default.name: ultraviolet`** — all services in this Compose project share a named bridge network called `ultraviolet`, making it easy to attach a reverse proxy (e.g. Caddy or Nginx) to the same network later.
+
+## Starting and Stopping with Compose
+
+```bash
+# Build the image (if not already built) and start in detached mode
+docker compose up -d --build
+
+# View live logs
+docker compose logs -f
+
+# Stop and remove the container (image is preserved)
+docker compose down
+```
+
+## Overriding PORT with Compose
+
+Add an `environment` block to the service definition in `docker-compose.yml`:
+
+```yaml
+services:
+  ultraviolet:
+    ports:
+      - 3000:3000
+    build:
+      context: .
+    container_name: ultraviolet
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+```
+
+<Warning>
+  Remember to update **both** the `ports` mapping and the `PORT` variable when changing the port. If they disagree, the container will listen on the new port but the host will forward to the wrong one.
+</Warning>
+
+## Recommended .dockerignore
+
+Create a `.dockerignore` file in the repository root to prevent `node_modules` and local secrets from being sent to the Docker build context:
+
+```text .dockerignore
+node_modules
+.env
+.env.*
+*.log
+```
+
+This speeds up `docker build` significantly on subsequent runs and prevents a locally-installed `node_modules` from overwriting the clean install performed inside the image.

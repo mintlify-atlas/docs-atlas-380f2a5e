@@ -1,0 +1,200 @@
+---
+title: "Ultraviolet Config: Prefix, Codec, and SW Paths"
+sidebarTitle: "UV Config"
+description: "Configure the Ultraviolet service worker by editing uv.config.js. Set the proxy prefix, URL encoding codec, and paths to the handler, client, bundle, and SW files."
+---
+
+The `public/uv/uv.config.js` file is the single source of truth for how the Ultraviolet service worker behaves at runtime. It assigns a plain object to the global `self.__uv$config`, which the service worker reads when it intercepts a navigation request. Because this file lives inside `public/`, it takes precedence over the stock config shipped by the `@titaniumnetwork-dev/ultraviolet` package — the Express server mounts the package files under `/uv/` *after* the public directory, so your edits always win.
+
+## Full configuration file
+
+The default configuration shipped with Ultraviolet App looks like this:
+
+```js title="public/uv/uv.config.js"
+// This file overwrites the stock UV config.js
+
+self.__uv$config = {
+  prefix: "/uv/service/",
+  encodeUrl: Ultraviolet.codec.xor.encode,
+  decodeUrl: Ultraviolet.codec.xor.decode,
+  handler: "/uv/uv.handler.js",
+  client: "/uv/uv.client.js",
+  bundle: "/uv/uv.bundle.js",
+  config: "/uv/uv.config.js",
+  sw: "/uv/uv.sw.js",
+};
+```
+
+## Field reference
+
+<ParamField path="prefix" type="string" required>
+  The URL path under which all proxied pages are served. Every request whose
+  path starts with this prefix is intercepted by the service worker and routed
+  through Ultraviolet. The default value is `"/uv/service/"`.
+
+  Changing this value lets you avoid fingerprinting on the well-known default
+  path. The new prefix must still fall under the service worker's scope, and
+  the service worker registration in `public/register-sw.js` must remain
+  reachable at the root scope (`/uv/sw.js`).
+
+  ```js
+  prefix: "/uv/service/",
+  ```
+</ParamField>
+
+<ParamField path="encodeUrl" type="function" required>
+  A function that encodes a plaintext URL into the obfuscated form stored in
+  the browser's address bar while browsing through the proxy. Must be the
+  inverse of `decodeUrl`. The default uses the built-in XOR codec:
+
+  ```js
+  encodeUrl: Ultraviolet.codec.xor.encode,
+  ```
+
+  See [URL encoding codecs](#url-encoding-codecs) below for the full list of
+  available options.
+</ParamField>
+
+<ParamField path="decodeUrl" type="function" required>
+  The inverse of `encodeUrl`. The service worker calls this to recover the
+  original URL from the encoded path before fetching the upstream resource.
+
+  ```js
+  decodeUrl: Ultraviolet.codec.xor.decode,
+  ```
+</ParamField>
+
+<ParamField path="handler" type="string" required>
+  Absolute path to the service worker handler script. This file is loaded
+  inside the service worker context and contains the fetch interception logic
+  that rewrites requests and responses.
+
+  ```js
+  handler: "/uv/uv.handler.js",
+  ```
+</ParamField>
+
+<ParamField path="client" type="string" required>
+  Absolute path to the client-side rewriting script. Ultraviolet injects this
+  into every proxied page so that in-page scripts (event handlers, `fetch`,
+  `XMLHttpRequest`, `location`, etc.) are transparently rewritten to stay
+  within the proxy.
+
+  ```js
+  client: "/uv/uv.client.js",
+  ```
+</ParamField>
+
+<ParamField path="bundle" type="string" required>
+  Absolute path to the Ultraviolet bundle. This script bootstraps the
+  in-page environment before the client script runs, setting up the
+  sandboxed globals that the rewriter depends on.
+
+  ```js
+  bundle: "/uv/uv.bundle.js",
+  ```
+</ParamField>
+
+<ParamField path="config" type="string" required>
+  Absolute path to this config file itself. Ultraviolet loads the config from
+  within the service worker context, so it needs to know the URL to fetch it
+  from. This must always point to `uv.config.js` — do not change this unless
+  you also rename the file and update all references.
+
+  ```js
+  config: "/uv/uv.config.js",
+  ```
+</ParamField>
+
+<ParamField path="sw" type="string" required>
+  Absolute path to the Ultraviolet service worker script (`uv.sw.js`). This
+  is separate from the *registration* script (`/uv/sw.js`) that the browser
+  uses to register the worker. `uv.sw.js` is the actual worker implementation
+  imported by the stock `sw.js`.
+
+  ```js
+  sw: "/uv/uv.sw.js",
+  ```
+</ParamField>
+
+## URL encoding codecs
+
+Ultraviolet ships three built-in codecs under `Ultraviolet.codec`. Each codec
+must be set as a matched `encodeUrl` / `decodeUrl` pair — mixing encoders and
+decoders from different codecs will break URL resolution inside the proxy.
+
+<AccordionGroup>
+  <Accordion title="xor (default)">
+    XOR-encodes every character in the URL against its index position, then
+    Base64-encodes the result. Encoded URLs look like random Base64 strings
+    and are not human-readable, providing lightweight obfuscation against
+    casual inspection of the address bar or server logs. This is the
+    recommended default.
+
+    ```js
+    encodeUrl: Ultraviolet.codec.xor.encode,
+    decodeUrl: Ultraviolet.codec.xor.decode,
+    ```
+  </Accordion>
+
+  <Accordion title="base64">
+    Plain Base64 encoding with no XOR step. The original URL is recoverable by
+    anyone who decodes the Base64 string, so it offers less obfuscation than
+    XOR. Use this if you need simpler debugging or interoperability with tools
+    that expect Base64-only encoding.
+
+    ```js
+    encodeUrl: Ultraviolet.codec.base64.encode,
+    decodeUrl: Ultraviolet.codec.base64.decode,
+    ```
+  </Accordion>
+
+  <Accordion title="plain">
+    No encoding at all — the original URL appears verbatim in the proxied
+    path. Useful only during local development when you want to inspect
+    traffic without any transformation. Do not use in production.
+
+    ```js
+    encodeUrl: Ultraviolet.codec.plain.encode,
+    decodeUrl: Ultraviolet.codec.plain.decode,
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  All three fields — `prefix`, `encodeUrl`, and `decodeUrl` — must be
+  consistent with each other. If you change the codec you must also clear any
+  existing bookmarks or history entries that were encoded with the old codec,
+  because the service worker will fail to decode them.
+</Warning>
+
+## Changing the proxy prefix
+
+If you want to serve the proxy under a custom path, update `prefix` and
+ensure the service worker scope still covers that path. The registration in
+`public/register-sw.js` registers the worker at `/uv/sw.js` with default
+scope, which covers all paths under `/uv/` — the default prefix
+`/uv/service/` is safely within that scope.
+
+<Tip>
+  Paths outside `/uv/` require a broader service worker scope. Pass a
+  `{ scope: '/' }` option when calling `navigator.serviceWorker.register()`
+  in `register-sw.js`, and add a `Service-Worker-Allowed: /` response header
+  to the `sw.js` file to permit the extended scope.
+</Tip>
+
+## Static file serving precedence
+
+The Express server mounts paths in this order (see `src/index.js`):
+
+```js title="src/index.js (static mounts)"
+app.use(express.static("./public"));          // your overrides
+app.use("/uv/", express.static(uvPath));      // upstream UV package files
+app.use("/epoxy/", express.static(epoxyPath));
+app.use("/baremux/", express.static(baremuxPath));
+```
+
+Because `public/` is mounted first, your `public/uv/uv.config.js` always
+shadows the `uv.config.js` bundled inside the upstream package. Any other
+file you place under `public/uv/` will similarly override the package
+default.

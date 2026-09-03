@@ -1,0 +1,200 @@
+---
+title: "Ultraviolet App FAQ: Deployment and Usage Questions"
+sidebarTitle: "FAQ"
+description: "Answers to frequently asked questions about Ultraviolet App: what it does, how to self-host, transport options, browser support, and getting community help."
+---
+
+This page collects the most common questions about Ultraviolet App from developers setting up self-hosted deployments, customising the transport layer, or evaluating whether the project fits their needs. Each answer is based on the actual source code and project documentation.
+
+<AccordionGroup>
+
+<Accordion title="What is Ultraviolet App?">
+
+Ultraviolet App is the official all-in-one, production-ready deployment bundle for [Ultraviolet](https://github.com/titaniumnetwork-dev/Ultraviolet), a web proxy built for evading internet censorship and accessing websites inside a controlled sandbox.
+
+It bundles together:
+
+- An **Express 5** HTTP server (`src/index.js`) that serves static assets and the UV runtime.
+- The **Ultraviolet** service-worker proxy engine, served from `/uv/`.
+- **BareMux**, a transport abstraction layer served from `/baremux/`.
+- **EpoxyTransport**, the default encrypted transport, served from `/epoxy/`.
+- A **Wisp** WebSocket tunnel server for low-latency proxied connections.
+- A ready-to-use frontend (`public/index.html`) with a URL/search form.
+
+The entire stack is self-contained: clone the repo, run `pnpm install && pnpm start`, and the proxy is live on port `8080`.
+
+<Note>
+The README notes that Ultraviolet App is no longer actively maintained and has been superseded by [Scramjet](https://github.com/MercuryWorkshop/scramjet) from MercuryWorkshop. See the question below for more detail.
+</Note>
+
+</Accordion>
+
+<Accordion title="What Node.js version do I need?">
+
+Node.js **24 or later** is required. The `engines` field in `package.json` enforces this:
+
+```json
+"engines": {
+  "node": ">=24.0.0"
+}
+```
+
+Node 24 is also the minimum required for Corepack to be reliably available without a separate global install step. If you are on an older Node version you will need to upgrade before `pnpm install` will work correctly.
+
+The Docker image uses `node:lts-alpine`, which will track the current LTS release. As of the time of writing, Node 22 is LTS; if the LTS base image ever lags behind the `>=24.0.0` requirement you may need to pin the Dockerfile to a specific version tag such as `node:24-alpine`.
+
+</Accordion>
+
+<Accordion title="Which browsers are supported?">
+
+Any browser that supports the [Service Worker API](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API) will work. This covers all modern Chromium-based browsers (Chrome, Edge, Brave, Opera) and Firefox — with an important caveat for Firefox.
+
+**Firefox requires HTTPS.** The `register-sw.js` script only allows service worker registration from a secure context:
+
+```js
+const swAllowedHostnames = ["localhost", "127.0.0.1"];
+
+async function registerSW() {
+  if (!navigator.serviceWorker) {
+    if (
+      location.protocol !== "https:" &&
+      !swAllowedHostnames.includes(location.hostname)
+    )
+      throw new Error("Service workers cannot be registered without https.");
+    // ...
+  }
+}
+```
+
+The allowed `http://` hostnames are `localhost` and `127.0.0.1`. Any other origin must be served over `https://` for Firefox to work. Chromium-based browsers are more permissive and work on `http://localhost` and even local network IP addresses during development.
+
+</Accordion>
+
+<Accordion title="What is EpoxyTransport?">
+
+[EpoxyTransport](https://github.com/MercuryWorkshop/EpoxyTransport) is an encrypted HTTP transport built by MercuryWorkshop. It is the default transport used in Ultraviolet App.
+
+Unlike the legacy Bare transport (which sends proxied requests unencrypted), EpoxyTransport encrypts traffic between the browser and the proxy server using WebAssembly. It relies on `SharedArrayBuffer`, which requires a [cross-origin isolated](https://developer.mozilla.org/en-US/docs/Web/API/Window/crossOriginIsolated) context — this is why the server sets `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers on every response.
+
+In `public/index.js`, the transport is activated when a URL is submitted:
+
+```js
+const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
+
+// Inside the form submit handler:
+if ((await connection.getTransport()) !== "/epoxy/index.mjs") {
+  await connection.setTransport("/epoxy/index.mjs", [
+    { wisp: wispUrl },
+  ]);
+}
+```
+
+The transport is only set if it is not already active, avoiding unnecessary re-initialisation on subsequent navigations.
+
+</Accordion>
+
+<Accordion title="Can I use a different transport?">
+
+Yes. The transport layer is managed by [BareMux](https://github.com/MercuryWorkshop/bare-mux), which abstracts over multiple transport implementations. Ultraviolet App ships EpoxyTransport as the default, but you can swap it out.
+
+Other available transports from MercuryWorkshop include:
+
+- **[CurlTransport](https://github.com/MercuryWorkshop/CurlTransport)** — an alternative encrypted transport.
+- **[Bare-Client](https://github.com/MercuryWorkshop/Bare-as-module3)** — the legacy unencrypted transport; not recommended for production.
+
+To switch transports, update the `setTransport` call in `public/index.js`:
+
+```js
+// Replace with the path and options for your chosen transport:
+await connection.setTransport("/your-transport/index.mjs", [
+  { wisp: wispUrl },
+]);
+```
+
+You will also need to serve the transport's static files from your Express app by adding a new `express.static` route in `src/index.js`, similar to how EpoxyTransport is already served:
+
+```js
+import { epoxyPath } from "@mercuryworkshop/epoxy-transport";
+// ...
+app.use("/epoxy/", express.static(epoxyPath));
+```
+
+See the [bare-mux documentation](https://github.com/MercuryWorkshop/bare-mux) for the full list of compatible transports and their configuration options.
+
+<Warning>
+Bare-Client sends proxied requests unencrypted. Do not use it in production or in any context where network traffic may be observed.
+</Warning>
+
+</Accordion>
+
+<Accordion title="What is Wisp?">
+
+[Wisp](https://github.com/MercuryWorkshop/wisp-protocol) is a WebSocket-based tunneling protocol designed for low-latency, multiplexed connections from browser clients. Ultraviolet App includes `wisp-server-node` and routes upgrade requests to it in `src/index.js`:
+
+```js
+server.on("upgrade", (req, socket, head) => {
+  if (req.url.endsWith("/wisp/")) {
+    wisp.routeRequest(req, socket, head);
+    return;
+  }
+  socket.end();
+});
+```
+
+Only WebSocket upgrade requests whose URL ends with `/wisp/` are handled. All other upgrade requests are closed immediately. The frontend constructs the Wisp URL dynamically, using `wss://` on HTTPS origins and `ws://` on HTTP:
+
+```js
+let wispUrl =
+  (location.protocol === "https:" ? "wss" : "ws") +
+  "://" +
+  location.host +
+  "/wisp/";
+```
+
+EpoxyTransport uses this Wisp endpoint to tunnel proxied requests through the server. The trailing slash in `/wisp/` is required and must be preserved in any reverse proxy configuration.
+
+</Accordion>
+
+<Accordion title="Is Ultraviolet App still maintained?">
+
+**No.** The official README contains a caution notice:
+
+> Please note that this project isn't really maintained anymore before making issues! It has been superseded by [Scramjet](https://github.com/MercuryWorkshop/scramjet). An example application setup can be found [here](https://github.com/MercuryWorkshop/Scramjet-App).
+
+For new projects, MercuryWorkshop recommends using **Scramjet** instead. The Scramjet project is the actively maintained successor and provides a similar developer experience with continued updates.
+
+Ultraviolet App remains functional and is a valid choice if you need a stable, well-understood codebase that is unlikely to change, but you should not expect bug fixes or new features from the upstream project.
+
+</Accordion>
+
+<Accordion title="Where can I get help?">
+
+Community support is available through the **TitaniumNetwork Discord server**:
+
+[discord.gg/unblock](https://discord.gg/unblock)
+
+The Discord is the primary support channel mentioned in the README. It covers topics including deployment help, transport configuration, and general questions about the TitaniumNetwork ecosystem.
+
+For bug reports or code questions specifically about the Ultraviolet core library (not the App wrapper), the [Ultraviolet GitHub repository](https://github.com/titaniumnetwork-dev/Ultraviolet) may be more appropriate — though given the maintenance status of the project, community channels are likely to get faster responses.
+
+</Accordion>
+
+<Accordion title="What license is Ultraviolet App under?">
+
+Ultraviolet App is licensed under the **GNU General Public License v3.0 or later (GPL-3.0-or-later)**. This is declared in `package.json`:
+
+```json
+"license": "GPL-3.0-or-later"
+```
+
+The GPL-3.0 is a strong copyleft license. Key implications for deployers:
+
+- You may use, modify, and self-host the software freely.
+- If you distribute a modified version (including as a network service under some interpretations), you must make your source code available under the same license.
+- The license does **not** restrict personal or internal use.
+
+Review the `LICENSE` file in the repository for the full license text before incorporating Ultraviolet App into a commercial or redistributed product.
+
+</Accordion>
+
+</AccordionGroup>

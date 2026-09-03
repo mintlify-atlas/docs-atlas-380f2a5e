@@ -1,0 +1,308 @@
+---
+title: "Customising the Ultraviolet App Frontend"
+sidebarTitle: "Frontend"
+description: "Replace or extend the default Ultraviolet App UI by editing files in the public/ directory. Covers HTML structure, CSS variables, JavaScript hooks, and adding new pages."
+---
+
+The entire user-facing interface lives inside the `public/` directory. The Express server mounts this directory first — before any of the vendor UV files — so any file you place there takes priority over the upstream library assets. This means you can override `uv.config.js`, add new pages, or replace every visual element without touching `node_modules` or the server entry point.
+
+## Directory overview
+
+The `public/` folder is served as plain static files at the root of your domain. The server configuration in `src/index.js` makes the priority order explicit:
+
+```js src/index.js
+// Load our publicPath first and prioritize it over UV.
+app.use(express.static("./public"));
+// Load vendor files last.
+// The vendor's uv.config.js won't conflict with our uv.config.js inside the publicPath directory.
+app.use("/uv/", express.static(uvPath));
+app.use("/epoxy/", express.static(epoxyPath));
+app.use("/baremux/", express.static(baremuxPath));
+```
+
+The key files you will interact with are:
+
+<CardGroup cols={2}>
+  <Card title="index.html" icon="file-code">
+    Main landing page. Contains the search form and the proxy iframe.
+  </Card>
+  <Card title="index.css" icon="palette">
+    All styles. Dark background, input pill, iframe full-viewport overlay.
+  </Card>
+  <Card title="index.js" icon="bolt">
+    Form submission handler. Wires BareMux transport, calls `search()`, and loads the iframe.
+  </Card>
+  <Card title="register-sw.js" icon="gear">
+    Service worker registration utility, shared by `index.html` and `404.html`.
+  </Card>
+  <Card title="search.js" icon="magnifying-glass">
+    URL resolution logic. Converts raw user input into a fully qualified URL or a search query.
+  </Card>
+  <Card title="404.html" icon="triangle-exclamation">
+    Error page shown for unmatched routes and unregistered service worker states.
+  </Card>
+</CardGroup>
+
+## HTML structure
+
+`index.html` defines every element that `index.js` references by ID. The IDs below are **required** — removing or renaming any of them will break the JavaScript logic.
+
+```html public/index.html
+<form id="uv-form" class="flex-center">
+  <input
+    id="uv-search-engine"
+    value="https://www.google.com/search?q=%s"
+    type="hidden"
+  />
+  <input id="uv-address" type="text" placeholder="Search the web freely" />
+</form>
+<div class="desc left-margin">
+  <p id="uv-error"></p>
+  <pre id="uv-error-code"></pre>
+</div>
+<!-- ... -->
+<iframe style="display: none" id="uv-frame"></iframe>
+```
+
+| Element ID | Role |
+|---|---|
+| `uv-form` | Wrapping `<form>` — its `submit` event drives the whole proxy flow |
+| `uv-address` | Visible text input the user types a URL or search query into |
+| `uv-search-engine` | Hidden input holding the search engine template (e.g. `https://www.google.com/search?q=%s`) |
+| `uv-error` | `<p>` populated with a human-readable error message on failure |
+| `uv-error-code` | `<pre>` populated with the raw error string for debugging |
+| `uv-frame` | The `<iframe>` that loads the proxied site; hidden until the form is first submitted |
+
+<Warning>
+  Do **not** remove `#uv-frame`. `index.js` sets `frame.style.display = "block"` and writes to `frame.src` on every form submission. If the element is missing, the proxy will throw a runtime error and the user will see a blank page.
+</Warning>
+
+## CSS fundamentals
+
+`index.css` sets the core visual language. Three rules are especially important to understand before you start customising:
+
+```css public/index.css
+body {
+  font-family: "Roboto", Arial, Helvetica, sans-serif;
+  margin: 0;
+  background: #111;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+#uv-frame {
+  border: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #111;
+}
+
+#uv-address {
+  background: none;
+  padding: 0px 17px;
+  height: 48px;
+  border: 1px solid rgb(255, 255, 255, 0.2);
+  border-radius: 50px;
+  color: #fff;
+  width: 350px;
+  transition: border-radius 0.1s;
+}
+
+#uv-address:focus {
+  border: 1px solid rgba(253, 253, 253, 0.514);
+  border-radius: 6px;
+}
+```
+
+Key points:
+
+- The `body` background is `#111` (near-black). Change this to set the landing page background colour.
+- `#uv-frame` uses `position: absolute` with `width: 100vw; height: 100vh` so it covers the entire viewport the moment it becomes visible. This is intentional — it produces a seamless full-screen browsing experience.
+- `#uv-address` renders as a rounded pill (`border-radius: 50px`) that collapses to a square-cornered box (`border-radius: 6px`) when focused, giving a tactile focus cue.
+
+### Changing the colour scheme
+
+Because the stylesheet uses literal hex values rather than CSS custom properties, the simplest way to theme the app is to add your own variables to `:root` and reference them:
+
+```css public/index.css  (additions)
+:root {
+  --bg: #1a1a2e;
+  --accent: #e94560;
+  --input-border: rgba(233, 69, 96, 0.4);
+}
+
+body {
+  background: var(--bg);
+}
+
+#uv-frame {
+  background-color: var(--bg);
+}
+
+#uv-address {
+  border-color: var(--input-border);
+}
+```
+
+## JavaScript hooks
+
+`index.js` wires the form submit event, manages the BareMux transport, and drives the iframe. The relevant section reads:
+
+```js public/index.js
+const form = document.getElementById("uv-form");
+const address = document.getElementById("uv-address");
+const searchEngine = document.getElementById("uv-search-engine");
+const error = document.getElementById("uv-error");
+const errorCode = document.getElementById("uv-error-code");
+const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  try {
+    await registerSW();
+  } catch (err) {
+    error.textContent = "Failed to register service worker.";
+    errorCode.textContent = err.toString();
+    throw err;
+  }
+
+  const url = search(address.value, searchEngine.value);
+
+  let frame = document.getElementById("uv-frame");
+  frame.style.display = "block";
+  let wispUrl =
+    (location.protocol === "https:" ? "wss" : "ws") +
+    "://" +
+    location.host +
+    "/wisp/";
+  if ((await connection.getTransport()) !== "/epoxy/index.mjs") {
+    await connection.setTransport("/epoxy/index.mjs", [
+      { wisp: wispUrl },
+    ]);
+  }
+  frame.src = __uv$config.prefix + __uv$config.encodeUrl(url);
+});
+```
+
+To add behaviour that runs after a proxy URL is loaded — for example, injecting a toolbar above the iframe — attach a `load` listener to `#uv-frame` after it is shown:
+
+```js public/index.js  (addition)
+const frame = document.getElementById("uv-frame");
+
+frame.addEventListener("load", () => {
+  if (frame.style.display === "none") return;
+  // Your post-load logic here, e.g. update an address bar overlay
+  console.log("Proxied page loaded:", frame.src);
+});
+```
+
+<Note>
+  `index.js` is loaded as a classic (non-module) script at the bottom of `<body>`, so `registerSW` and `search` from `register-sw.js` and `search.js` are already available in scope when it runs. If you refactor to ES modules, ensure those functions are imported or re-exported correctly.
+</Note>
+
+## Adding new static pages
+
+Because `public/` is served as a static directory, adding a new page is as simple as dropping an HTML file in the folder. No server restart or routing change is required.
+
+<Steps>
+  <Step title="Create the HTML file">
+    Add your page to `public/`. For example, `public/about.html`. It will be accessible at `/about.html`.
+  </Step>
+  <Step title="Link shared assets">
+    Reference `index.css` for consistent styling and include `register-sw.js` if your page triggers the proxy:
+
+    ```html public/about.html
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>About | My Proxy</title>
+        <link rel="stylesheet" href="index.css" />
+      </head>
+      <body>
+        <!-- your content -->
+      </body>
+    </html>
+    ```
+  </Step>
+  <Step title="Link from the footer">
+    The default footer in `index.html` already uses plain anchor links. Add your page there so users can find it:
+
+    ```html public/index.html  (footer)
+    <a href="about.html">About</a>
+    ```
+  </Step>
+</Steps>
+
+### The `credits.html` pattern
+
+The app ships a `credits.html` page that lists license attributions using a pure-CSS toggle pattern. Each credit entry is a `<div class="credit">` block with a hidden checkbox and a `<label>` that shows or hides the full license text:
+
+```html public/credits.html  (excerpt)
+<div class="credit">
+  <span>Ultraviolet-App</span>
+  <input type="checkbox" hidden id="0" />
+  <label for="0"></label>
+  <a href="https://github.com/titaniumnetwork-dev/Ultraviolet-App">homepage</a>
+  <pre>MIT License ...</pre>
+</div>
+```
+
+The corresponding CSS in `index.css` drives the toggle:
+
+```css public/index.css
+.credit label::after {
+  content: "show license";
+  cursor: pointer;
+}
+
+.credit input:checked + label::after {
+  content: "hide license";
+}
+
+.credit input:checked ~ pre {
+  display: block;
+}
+```
+
+You can reuse this pattern for any expandable content block — FAQ entries, changelogs, or configuration reference tables — without adding any JavaScript.
+
+## Wrapping the UI in a new layout
+
+If you want a completely different layout (navigation sidebar, multi-tab interface, custom header) while keeping the proxy working, wrap all visible UI in whatever structure you like and leave the required IDs in place. The proxy machinery only cares about the IDs — not where those elements sit in the DOM.
+
+<Tip>
+  The safest approach is to keep `#uv-form`, `#uv-address`, `#uv-search-engine`, `#uv-error`, `#uv-error-code`, and `#uv-frame` exactly as they are, and build your new layout *around* them. Visual changes (colours, fonts, surrounding chrome) are entirely safe. Structural changes to those six IDs require matching edits to `index.js` and `search.js`.
+</Tip>
+
+```html public/index.html  (custom layout example)
+<body>
+  <!-- Custom navigation bar -->
+  <nav class="my-nav">
+    <span class="my-brand">MyProxy</span>
+    <a href="credits.html">Credits</a>
+  </nav>
+
+  <!-- Required proxy form — IDs unchanged -->
+  <main class="my-hero">
+    <form id="uv-form">
+      <input id="uv-search-engine" value="https://www.google.com/search?q=%s" type="hidden" />
+      <input id="uv-address" type="text" placeholder="Search the web freely" />
+    </form>
+    <p id="uv-error"></p>
+    <pre id="uv-error-code"></pre>
+  </main>
+
+  <!-- iframe must remain in the DOM — position it however you like -->
+  <iframe style="display: none" id="uv-frame"></iframe>
+
+  <script src="register-sw.js"></script>
+  <script src="search.js"></script>
+  <script src="index.js"></script>
+</body>
+```

@@ -1,0 +1,62 @@
+---
+title: "Ultraviolet App: Self-Hosted Web Proxy Overview"
+sidebarTitle: "Introduction"
+description: "Ultraviolet App bundles the Ultraviolet proxy, Express server, service workers, and encrypted transports into a single deployable Node.js application."
+---
+
+Ultraviolet App is a production-ready, all-in-one Node.js application that packages the [Ultraviolet](https://github.com/titaniumnetwork-dev/Ultraviolet) web proxy engine alongside everything it needs to run: an Express 5 HTTP server, a Wisp WebSocket tunnel, BareMux transport abstraction, and EpoxyTransport for encrypted data transfer. Instead of wiring these components together yourself, you get a single repository you can clone, install, and deploy — on a laptop, a VPS, Docker, or a one-click platform — in minutes.
+
+## What Problem Does It Solve?
+
+Network filters and content restrictions often block sites at the DNS or HTTP layer. Ultraviolet works around this by routing all proxied traffic through a service worker running inside the user's own browser. The service worker intercepts fetch and navigation requests, rewrites them through the `/uv/service/` prefix with XOR-encoded URLs, and fetches the actual content via the Wisp tunnel — all without requiring a browser extension or elevated privileges. Ultraviolet App provides the server-side half of this system: the static file host, the Wisp upgrade handler, and the correct CORS security headers (`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`) that modern browsers require.
+
+## Key Components
+
+<CardGroup cols={2}>
+  <Card title="Ultraviolet Core" icon="shield-halved" href="https://github.com/titaniumnetwork-dev/Ultraviolet">
+    The proxy engine itself. Handles URL encoding/decoding, request rewriting, and the service-worker bundle (`uv.sw.js`, `uv.bundle.js`, `uv.handler.js`, `uv.client.js`). Served under `/uv/`.
+  </Card>
+  <Card title="EpoxyTransport" icon="lock" href="https://github.com/MercuryWorkshop/EpoxyTransport">
+    The default HTTP transport layer. Fetches proxied data encrypted over a WebSocket connection. Static assets are served under `/epoxy/`.
+  </Card>
+  <Card title="BareMux" icon="shuffle" href="https://github.com/MercuryWorkshop/bare-mux">
+    A transport-agnostic abstraction that lets the frontend swap between EpoxyTransport, CurlTransport, and Bare-Client without changing proxy logic. The worker script is served under `/baremux/`.
+  </Card>
+  <Card title="Wisp Tunnel" icon="plug" href="https://github.com/MercuryWorkshop/wisp-server-node">
+    A lightweight WebSocket multiplexer. The Express server upgrades connections at `/wisp/` and hands them to `wisp-server-node`, which tunnels TCP streams for the transport layer.
+  </Card>
+</CardGroup>
+
+## How the Request Flow Works
+
+When a user submits a URL in the search form, the frontend:
+
+1. Registers the service worker (`/uv/sw.js`) in the browser.
+2. Establishes a BareMux connection to `/baremux/worker.js` and sets EpoxyTransport with the Wisp endpoint (`/wisp/`).
+3. Navigates the embedded `<iframe>` to `/uv/service/<xor-encoded-url>`.
+4. The service worker intercepts all subsequent requests inside the iframe, rewrites and fetches them via Wisp/Epoxy, and returns the rewritten responses to the browser.
+
+The server itself never reads or modifies proxied content — all rewriting happens inside the service worker in the user's browser.
+
+## Requirements
+
+| Requirement | Minimum version |
+|---|---|
+| Node.js | **24.0.0** or newer (`engines` field in `package.json`) |
+| Package manager | pnpm 10 (managed via `corepack`), or npm / yarn |
+| Browser (development) | **Chromium-based** browser for `localhost` testing |
+| Browser (production) | Any modern browser; Firefox requires a valid HTTPS certificate |
+
+<Warning>
+  Firefox will not load the site without a valid SSL certificate. Service workers are only permitted on `http://` for `localhost` and `127.0.0.1`. Use a Chromium-based browser when testing locally without HTTPS.
+</Warning>
+
+## License
+
+Ultraviolet App is released under the **GPL-3.0-or-later** license, as declared in `package.json`. Review the terms before deploying publicly or incorporating the code into another project.
+
+## Next Steps
+
+<Card title="Quickstart" icon="rocket" href="/quickstart">
+  Clone, install, and start a local proxy server in under five minutes.
+</Card>

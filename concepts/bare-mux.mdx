@@ -1,0 +1,133 @@
+---
+title: "BareMux: Pluggable Transport Abstraction for UV"
+sidebarTitle: "BareMux"
+description: "BareMux is the transport abstraction layer used by Ultraviolet. It lets you swap HTTP backends (Epoxy, Curl, Bare) without changing proxy logic."
+---
+
+BareMux (`@mercuryworkshop/bare-mux`) is a shared-worker-based abstraction that sits between the Ultraviolet service worker and whatever network transport is actually making requests to target sites. Instead of hard-coding a specific transport inside the service worker, BareMux exposes a unified connection API that lets you swap transports — EpoxyTransport today, a different backend tomorrow — with a single method call and no changes to UV's internal logic.
+
+## What BareMux creates
+
+The connection object is constructed once at page load, before any form submission:
+
+```js
+const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
+```
+
+`BareMux.BareMuxConnection` spawns (or reuses) a shared worker loaded from `/baremux/worker.js`. Because it is a `SharedWorker`, the same worker instance is shared across all tabs from the same origin — transport state is consistent even when the user has multiple proxy tabs open simultaneously.
+
+The path `/baremux/worker.js` is served by the Express server from `baremuxPath`, which is the file system path exported by the `@mercuryworkshop/bare-mux/node` package:
+
+```js
+import { baremuxPath } from "@mercuryworkshop/bare-mux/node";
+
+app.use("/baremux/", express.static(baremuxPath));
+```
+
+This means all BareMux assets — the shared worker script and its dependencies — are resolved from the installed npm package automatically, with no manual copying required.
+
+## Checking and setting the active transport
+
+BareMux exposes two async methods on the connection object to read and write the current transport.
+
+### connection.getTransport()
+
+Returns the module path of the currently active transport as a string. In `public/index.js` this is used as a guard to avoid redundant re-initialisation:
+
+```js
+if ((await connection.getTransport()) !== "/epoxy/index.mjs") {
+  await connection.setTransport("/epoxy/index.mjs", [
+    { wisp: wispUrl },
+  ]);
+}
+```
+
+If the shared worker already has `/epoxy/index.mjs` loaded from a previous tab or a previous form submit, the `setTransport` call is skipped entirely.
+
+### connection.setTransport(path, options)
+
+Loads a new transport module into the shared worker and passes an options array to its constructor. The default transport used by this app is EpoxyTransport:
+
+```js
+let wispUrl =
+  (location.protocol === "https:" ? "wss" : "ws") +
+  "://" +
+  location.host +
+  "/wisp/";
+
+await connection.setTransport("/epoxy/index.mjs", [{ wisp: wispUrl }]);
+```
+
+| Parameter | Value | Purpose |
+|---|---|---|
+| `path` | `"/epoxy/index.mjs"` | ES module path served from `/epoxy/` by Express |
+| `options` | `[{ wisp: wispUrl }]` | Array passed as constructor arguments to EpoxyTransport; `wisp` is the WebSocket URL of the server-side Wisp tunnel |
+
+The Wisp URL is constructed dynamically at runtime: `wss://` when the page is served over HTTPS, `ws://` for plain HTTP (local development). The host is taken directly from `location.host` so the app works behind any domain or port without additional configuration.
+
+<Note>
+The options parameter is an **array**, not a plain object. EpoxyTransport receives it as spread constructor arguments, so `[{ wisp: wispUrl }]` means EpoxyTransport is called as `new EpoxyTransport({ wisp: wispUrl })`.
+</Note>
+
+## How the service worker uses BareMux
+
+Once a transport is set, the Ultraviolet service worker (`/uv/sw.js`) uses BareMux's fetch-like interface to make upstream requests. From the service worker's perspective there is no EpoxyTransport, no Wisp, and no WebSocket — it just calls into BareMux and receives a `Response`. This separation of concerns is what makes UV's rewriting logic transport-agnostic.
+
+```
+Service Worker (uv.sw.js)
+  │  fetch(rewrittenRequest)
+  ▼
+BareMux shared worker (/baremux/worker.js)
+  │  active transport: /epoxy/index.mjs
+  ▼
+EpoxyTransport (WASM)
+  │  Wisp stream over WebSocket
+  ▼
+wss://host/wisp/  →  wisp-server-node  →  target origin
+```
+
+## Swapping to a different transport
+
+Because the transport path is just a string passed to `setTransport`, you can switch to any BareMux-compatible transport by changing two values: the module path and the options object. No changes to `uv.config.js`, the service worker, or the Express server are needed.
+
+<Accordion title="Example: switching transport paths">
+
+The call below shows the shape of a `setTransport` call. Replace the path and options object with those of your chosen transport package.
+
+```js
+// Current default — EpoxyTransport via Wisp
+await connection.setTransport("/epoxy/index.mjs", [{ wisp: wispUrl }]);
+
+// Alternative shape for a different transport
+// (install the package, serve it via express.static, update path + options)
+await connection.setTransport("/your-transport/index.mjs", [{ /* options */ }]);
+```
+
+Serve the new transport's assets from Express the same way `epoxyPath` is served:
+
+```js
+import { yourTransportPath } from "your-transport-package/node";
+app.use("/your-transport/", express.static(yourTransportPath));
+```
+
+</Accordion>
+
+## BareMux in the HTML script loading order
+
+`index.html` loads BareMux's client-side bundle before any application code, because `index.js` references `BareMux.BareMuxConnection` at the module's top level (outside any event handler):
+
+```html
+<script src="baremux/index.js"></script>
+<script src="uv/uv.bundle.js"></script>
+<script src="uv/uv.config.js"></script>
+<!-- ... body ... -->
+<script src="register-sw.js"></script>
+<script src="search.js"></script>
+<script src="index.js"></script>
+```
+
+`baremux/index.js` exposes the `BareMux` global, making `BareMux.BareMuxConnection` available by the time `index.js` executes and calls `new BareMux.BareMuxConnection(...)`.
+
+<Tip>
+The `connection` object is constructed at page load, not inside the submit handler. This means the shared worker is started as soon as the page loads, reducing the latency on the first proxy navigation since the worker does not need to be spawned on form submit.
+</Tip>

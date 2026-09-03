@@ -1,0 +1,186 @@
+---
+title: "Environment Variables and Server Configuration"
+sidebarTitle: "Environment"
+description: "Configure the Ultraviolet App server with environment variables. Set the listening port, understand COOP/COEP security headers, and review the graceful shutdown behavior."
+---
+
+The Ultraviolet App server is configured primarily through a small set of environment variables read at startup. The server entry point is `src/index.js`, which creates a plain Node.js `http.Server`, attaches the Express application as its request handler, and adds a Wisp WebSocket upgrade handler alongside it. Understanding the startup sequence — port resolution, security header injection, and shutdown hooks — helps you deploy the app reliably in any environment that can run Node.js 24 or later.
+
+## Environment variables
+
+<ParamField path="PORT" type="integer">
+  The TCP port the server listens on. If this variable is unset or contains a
+  value that does not parse as a finite integer, the server falls back to
+  **8080**.
+
+  The resolution logic in `src/index.js` is:
+
+  ```js title="src/index.js"
+  let port = parseInt(process.env.PORT || "");
+
+  if (isNaN(port)) port = 8080;
+
+  server.listen({
+    port,
+  });
+  ```
+
+  `parseInt` is used (not `Number()`) so that values like `"8080abc"` are
+  accepted as `8080` rather than `NaN`. A completely non-numeric string such
+  as `"auto"` will still produce `NaN` and fall back to 8080.
+
+  **Examples:**
+
+  | `PORT` value | Resolved port |
+  |---|---|
+  | *(unset)* | 8080 |
+  | `"3000"` | 3000 |
+  | `""` | 8080 |
+  | `"auto"` | 8080 |
+  | `"3000abc"` | 3000 |
+
+  Set this variable when you need to run on a specific port assigned by your
+  hosting platform:
+
+  ```bash
+  PORT=3000 node src/index.js
+  ```
+
+  Or in a Docker or Compose environment:
+
+  ```yaml title="docker-compose.yml excerpt"
+  environment:
+    - PORT=3000
+  ```
+</ParamField>
+
+## Security headers (COOP and COEP)
+
+The server attaches two cross-origin security headers to **every** HTTP
+response before passing the request to Express. This is done at the raw
+`http.Server` level rather than in Express middleware so that even static file
+responses, 404 pages, and service worker scripts carry the headers:
+
+```js title="src/index.js"
+server.on("request", (req, res) => {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+  app(req, res);
+});
+```
+
+### Why these headers are required
+
+EpoxyTransport relies on `SharedArrayBuffer` to share memory between the main
+thread and its WebAssembly module. Browsers gate access to `SharedArrayBuffer`
+behind a *cross-origin isolated* context: a page is cross-origin isolated only
+when both of the following headers are present and set to the correct values.
+
+| Header | Value | Purpose |
+|---|---|---|
+| `Cross-Origin-Opener-Policy` | `same-origin` | Prevents other browsing contexts (pop-ups, openers) from retaining a reference to this window, isolating it in its own process. |
+| `Cross-Origin-Embedder-Policy` | `require-corp` | Requires every sub-resource (scripts, images, iframes) loaded by the page to opt in to cross-origin sharing via a `Cross-Origin-Resource-Policy` header or CORS, preventing side-channel attacks. |
+
+<Warning>
+  Removing or weakening either header will cause `SharedArrayBuffer` to be
+  `undefined` in the page context, which breaks EpoxyTransport at runtime. If
+  you embed the proxy inside an iframe or load third-party resources that do
+  not send a `Cross-Origin-Resource-Policy` header you may see resource
+  loading errors due to COEP enforcement.
+</Warning>
+
+<Note>
+  The headers are set unconditionally on all responses, including the service
+  worker registration script and the BareMux worker. This is intentional:
+  service workers inherit the headers of the document that registered them,
+  and the BareMux shared worker must also run in a cross-origin isolated
+  context to access `SharedArrayBuffer`.
+</Note>
+
+## Listen address and startup logging
+
+The server always binds to `0.0.0.0` (all network interfaces) regardless of
+the `PORT` setting. On startup it logs three addresses so you can reach it from
+the local machine, by hostname, and by its IP:
+
+```js title="src/index.js"
+server.on("listening", () => {
+  const address = server.address();
+
+  // by default we are listening on 0.0.0.0 (every interface)
+  // we just need to list a few
+  console.log("Listening on:");
+  console.log(`\thttp://localhost:${address.port}`);
+  console.log(`\thttp://${hostname()}:${address.port}`);
+  console.log(
+    `\thttp://${
+      address.family === "IPv6" ? `[${address.address}]` : address.address
+    }:${address.port}`
+  );
+});
+```
+
+`hostname()` is resolved from `node:os` and returns the machine's OS hostname.
+IPv6 bind addresses are wrapped in square brackets to produce valid URL
+authority strings (e.g. `http://[::]:8080`).
+
+## Graceful shutdown
+
+Ultraviolet App registers handlers for both `SIGINT` (Ctrl-C) and `SIGTERM`
+(the signal sent by container orchestrators and process managers like systemd)
+to shut down cleanly:
+
+```js title="src/index.js"
+// https://expressjs.com/en/advanced/healthcheck-graceful-shutdown.html
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+function shutdown() {
+  console.log("SIGTERM signal received: closing HTTP server");
+  server.close();
+  process.exit(0);
+}
+```
+
+`server.close()` stops accepting new connections while allowing in-flight
+requests to complete, then `process.exit(0)` terminates the process with a
+success exit code. This prevents abrupt connection drops during rolling
+restarts or container scale-down events.
+
+<Tip>
+  If you run the app behind a reverse proxy (nginx, Caddy, Traefik) you may
+  want to add a short sleep before `server.close()` so the proxy has time to
+  remove the backend from its upstream pool before the server stops accepting
+  connections. A `setTimeout` of 5–10 seconds is a common pattern for
+  zero-downtime deploys.
+</Tip>
+
+## Full server startup sequence
+
+To summarise the complete sequence that occurs when you run `node src/index.js`:
+
+<Steps>
+  <Step title="Imports and app setup">
+    Express is instantiated and static file middleware is mounted: `public/`
+    first (your overrides), then `/uv/`, `/epoxy/`, and `/baremux/` from their
+    respective npm packages.
+  </Step>
+  <Step title="HTTP server creation">
+    A bare `node:http` server is created. The `request` event handler injects
+    the COOP and COEP security headers before delegating to Express. The
+    `upgrade` event handler routes Wisp WebSocket connections to
+    `wisp-server-node`.
+  </Step>
+  <Step title="Port resolution">
+    `PORT` is parsed with `parseInt`. If the result is `NaN`, the port
+    defaults to `8080`.
+  </Step>
+  <Step title="Signal handlers registered">
+    `SIGINT` and `SIGTERM` are both wired to the `shutdown()` function.
+  </Step>
+  <Step title="Server starts listening">
+    `server.listen({ port })` binds to `0.0.0.0` on the resolved port. Once
+    bound, the `listening` event fires and the three access URLs are printed to
+    stdout.
+  </Step>
+</Steps>

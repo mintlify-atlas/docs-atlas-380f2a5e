@@ -1,47 +1,135 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Ultraviolet App in Minutes"
+sidebarTitle: "Quickstart"
+description: "Clone, install, and run Ultraviolet App locally with pnpm, npm, or yarn. Get a working proxy server running on port 8080 in under five minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+Ultraviolet App ships as a standard Node.js project with a single entry point (`src/index.js`) and no build step. You only need Git and a recent version of Node.js on your machine to have a working proxy server running locally. The steps below take you from zero to a live server in under five minutes.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, make sure the following are available in your terminal:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+- **Node.js ≥ 24.0.0** — check with `node --version`. The `engines` field in `package.json` enforces this minimum.
+- **Git** — to clone the repository.
+- **pnpm, npm, or yarn** — pnpm 10 is the project's canonical package manager (declared in `packageManager`), but npm and yarn work equally well.
 
-## Get started
+<Tip>
+  The recommended way to install and manage pnpm versions is through [Corepack](https://nodejs.org/api/corepack.html), which ships with Node.js 16+. Enable it once with `corepack enable`.
+</Tip>
+
+## Clone, Install, and Start
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repository">
+    Download the source code to your local machine:
 
     ```bash
-    npm install your-package
+    git clone https://github.com/titaniumnetwork-dev/Ultraviolet-App.git
+    cd Ultraviolet-App
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+  <Step title="Install dependencies">
+    Install all runtime and development dependencies. Choose your preferred package manager:
+
+    <CodeGroup>
+      ```bash pnpm
+      pnpm install
+      ```
+
+      ```bash npm
+      npm install
+      ```
+
+      ```bash yarn
+      yarn install
+      ```
+    </CodeGroup>
+
+    This pulls in the Ultraviolet core package (`@titaniumnetwork-dev/ultraviolet`), EpoxyTransport, BareMux, Express 5, `wisp-server-node`, and their peer dependencies.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+  <Step title="Start the server">
+    Run the `start` script, which executes `node src/index.js`:
+
+    <CodeGroup>
+      ```bash pnpm
+      pnpm start
+      ```
+
+      ```bash npm
+      npm start
+      ```
+
+      ```bash yarn
+      yarn start
+      ```
+    </CodeGroup>
+
+    You should see output similar to the following printed by the `server.on("listening", ...)` handler:
+
     ```
+    Listening on:
+        http://localhost:8080
+        http://your-hostname:8080
+        http://0.0.0.0:8080
+    ```
+
+    Open [http://localhost:8080](http://localhost:8080) in your browser.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Changing the Port
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+The server reads the `PORT` environment variable on startup. If the variable is absent or not a valid integer, it falls back to `8080`:
+
+```js
+let port = parseInt(process.env.PORT || "");
+if (isNaN(port)) port = 8080;
+```
+
+Set a custom port by prefixing the start command:
+
+```bash
+PORT=3000 pnpm start
+```
+
+## Browser Note
+
+<Warning>
+  **Use a Chromium-based browser for localhost testing.** Service workers require a secure context (`https://`). The `register-sw.js` file explicitly allows `http://` only for `localhost` and `127.0.0.1`. Firefox enforces the HTTPS requirement strictly and will not load the site over plain HTTP even on localhost.
+</Warning>
+
+The allowed-hostname list lives in `public/register-sw.js`:
+
+```js
+const swAllowedHostnames = ["localhost", "127.0.0.1"];
+
+async function registerSW() {
+  if (!navigator.serviceWorker) {
+    if (
+      location.protocol !== "https:" &&
+      !swAllowedHostnames.includes(location.hostname)
+    )
+      throw new Error("Service workers cannot be registered without https.");
+
+    throw new Error("Your browser doesn't support service workers.");
+  }
+
+  await navigator.serviceWorker.register(stockSW);
+}
+```
+
+For production deployments, a valid TLS certificate is required regardless of the browser.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Docker" icon="docker" href="/deployment/docker">
+    Build and run Ultraviolet App as a Docker container or use Compose for a managed, auto-restarting deployment.
+  </Card>
+  <Card title="Platforms" icon="cloud" href="/deployment/platforms">
+    Deploy to Replit, Railway, Koyeb, or any VPS with one-click buttons or a few terminal commands.
+  </Card>
+</CardGroup>

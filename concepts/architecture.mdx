@@ -1,0 +1,155 @@
+---
+title: "Ultraviolet App Architecture and Request Flow"
+sidebarTitle: "Architecture"
+description: "How the Ultraviolet App server, service worker, and transports work together to proxy web requests through a Node.js Express backend."
+---
+
+Ultraviolet App is a thin but carefully structured Node.js application that stitches together four independent components — an Express 5 HTTP server, a browser-side service worker, the BareMux transport abstraction, and a Wisp WebSocket tunnel — into a single coherent proxy pipeline. Understanding how these pieces fit together will make it much easier to customise, debug, or extend the application.
+
+## High-level request flow
+
+Every proxied page follows the same path from the moment a user submits a URL to the moment the rewritten response appears in the embedded iframe.
+
+```
+Browser (form submit)
+  │
+  ▼
+registerSW()  ──►  /uv/sw.js  (service worker registered in browser)
+  │
+  ▼
+frame.src = prefix + encodeUrl(url)   (e.g. /uv/service/<encoded-url>)
+  │
+  ▼
+Service Worker intercepts fetch
+  │
+  ├──► HTTP request  ──►  BareMux shared worker
+  │                            │
+  │                            ▼
+  │                       EpoxyTransport
+  │                            │
+  │                            ▼
+  │                       Wisp WebSocket  ──►  wss://host/wisp/
+  │                                                  │
+  │                                                  ▼
+  │                                           Target website
+  │                                                  │
+  │◄──────────────── rewritten response ─────────────┘
+  │
+  ▼
+#uv-frame  (displayed in the page)
+```
+
+No request to a proxied origin ever leaves the browser directly. Every fetch is intercepted by the service worker, tunnelled through BareMux and EpoxyTransport over a Wisp WebSocket connection to the Node.js server, which then makes the real upstream request on the browser's behalf.
+
+## Express server responsibilities
+
+The server entry point (`src/index.js`) creates a plain Node.js `http.Server` and hands all HTTP requests to an Express 5 application. Using a raw `http.Server` rather than `app.listen()` is intentional — it allows the same server instance to handle both HTTP and WebSocket upgrade events.
+
+### Security headers
+
+Every HTTP response receives two headers required for `SharedArrayBuffer` and certain service-worker features:
+
+```js
+server.on("request", (req, res) => {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+  app(req, res);
+});
+```
+
+`COOP: same-origin` isolates the browsing context so it cannot be reached from cross-origin windows. `COEP: require-corp` ensures all subresources either opt in via CORP headers or are same-origin, which is a prerequisite for enabling high-resolution timers and `SharedArrayBuffer` — both used internally by EpoxyTransport.
+
+### Static mount points
+
+The Express app mounts four static file trees in a deliberate order:
+
+```js
+// Load our publicPath first and prioritize it over UV.
+app.use(express.static("./public"));
+// Load vendor files last.
+// The vendor's uv.config.js won't conflict with our uv.config.js inside the publicPath directory.
+app.use("/uv/", express.static(uvPath));
+app.use("/epoxy/", express.static(epoxyPath));
+app.use("/baremux/", express.static(baremuxPath));
+```
+
+| Mount path | Source | Purpose |
+|---|---|---|
+| `/` (root) | `./public` | User-editable assets: HTML, CSS, JS, and the custom `uv.config.js` |
+| `/uv/` | `uvPath` from `@titaniumnetwork-dev/ultraviolet` | UV service worker, handler, bundle, and default config |
+| `/epoxy/` | `epoxyPath` from `@mercuryworkshop/epoxy-transport` | EpoxyTransport WASM and JS module |
+| `/baremux/` | `baremuxPath` from `@mercuryworkshop/bare-mux/node` | BareMux shared worker |
+
+<Note>
+`./public` is mounted **before** `/uv/` intentionally. Express resolves static files in registration order, so `public/uv/uv.config.js` is served first for the path `/uv/uv.config.js`, overriding the vendor-bundled config that ships inside the `@titaniumnetwork-dev/ultraviolet` package. This lets you customise `prefix`, `encodeUrl`, and other UV options without patching `node_modules`.
+</Note>
+
+### 404 fallback
+
+Any request that does not match a static file falls through to a catch-all handler that returns the custom error page with an HTTP 404 status:
+
+```js
+app.use((req, res) => {
+  res.status(404);
+  res.sendFile("./public/404.html");
+});
+```
+
+### Wisp WebSocket upgrade
+
+WebSocket upgrade requests are handled outside of Express, directly on the raw `http.Server`:
+
+```js
+server.on("upgrade", (req, socket, head) => {
+  if (req.url.endsWith("/wisp/")) {
+    wisp.routeRequest(req, socket, head);
+    return;
+  }
+  socket.end();
+});
+```
+
+Only connections whose URL ends with `/wisp/` are accepted and handed to `wisp-server-node`. Every other upgrade request is immediately closed. The Wisp server acts as a multiplexing tunnel: EpoxyTransport on the client side opens Wisp streams over this single WebSocket connection for each upstream TCP connection it needs to make.
+
+## Port and process lifecycle
+
+The server reads its port from the `PORT` environment variable, defaulting to `8080` if the variable is absent or not a valid integer:
+
+```js
+let port = parseInt(process.env.PORT || "");
+if (isNaN(port)) port = 8080;
+```
+
+Graceful shutdown is handled for both `SIGINT` (Ctrl-C) and `SIGTERM` (container stop):
+
+```js
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+function shutdown() {
+  console.log("SIGTERM signal received: closing HTTP server");
+  server.close();
+  process.exit(0);
+}
+```
+
+<Tip>
+When deploying behind a reverse proxy such as Nginx or Caddy, set `PORT` to a high-numbered port (e.g. `3000`) and let the reverse proxy handle TLS termination. The Wisp WebSocket path (`/wisp/`) must be proxied as a WebSocket connection — make sure your reverse proxy configuration includes `Upgrade` and `Connection` headers.
+</Tip>
+
+## Component dependency map
+
+<CardGroup cols={2}>
+  <Card title="@titaniumnetwork-dev/ultraviolet" icon="shield">
+    Provides the service worker (`uv.sw.js`), URL rewriting handler, and client-side bundle. Served at `/uv/`.
+  </Card>
+  <Card title="@mercuryworkshop/epoxy-transport" icon="bolt">
+    WebAssembly-based transport that tunnels HTTP/HTTPS through Wisp WebSocket streams. Served at `/epoxy/`.
+  </Card>
+  <Card title="@mercuryworkshop/bare-mux" icon="arrows-split-up-and-left">
+    Shared worker that multiplexes transport connections and exposes a unified fetch-like API to the service worker. Served at `/baremux/`.
+  </Card>
+  <Card title="wisp-server-node" icon="tower-broadcast">
+    Node.js Wisp server that accepts WebSocket upgrades at `/wisp/` and proxies TCP streams to target hosts.
+  </Card>
+</CardGroup>

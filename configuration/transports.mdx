@@ -1,0 +1,204 @@
+---
+title: "HTTP Transports: Epoxy, Curl, and Bare Client"
+sidebarTitle: "Transports"
+description: "Choose how Ultraviolet fetches proxied data. Compare EpoxyTransport (encrypted, default), CurlTransport, and the legacy unencrypted Bare client."
+---
+
+Ultraviolet does not fetch upstream content directly from the browser — doing so would be blocked by the browser's same-origin policy. Instead, it routes every proxied HTTP request through a *transport*, a small JavaScript module that knows how to forward the request to a server-side relay and return the response. The pluggable transport layer is provided by **BareMux** (`@mercuryworkshop/bare-mux`), which acts as an abstraction over multiple concrete transport implementations. Swapping transports is a runtime decision: you call one function before the first navigation and BareMux handles the rest transparently.
+
+## How BareMux works
+
+BareMux exposes a shared worker (`/baremux/worker.js`) that the page and the service worker both communicate with. The page holds a `BareMuxConnection` object and uses it to configure which transport module the worker should load. Once configured, the service worker's fetch handler delegates outbound requests to that worker without needing to know which transport is active.
+
+The frontend creates the connection once at module load time in `public/index.js`:
+
+```js title="public/index.js"
+const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
+```
+
+Before the proxy iframe is shown, the form submit handler checks whether the transport is already set to the desired module and (re-)configures it if necessary:
+
+```js title="public/index.js"
+const wispUrl =
+  (location.protocol === "https:" ? "wss" : "ws") +
+  "://" +
+  location.host +
+  "/wisp/";
+if ((await connection.getTransport()) !== "/epoxy/index.mjs") {
+  await connection.setTransport("/epoxy/index.mjs", [{ wisp: wispUrl }]);
+}
+frame.src = __uv$config.prefix + __uv$config.encodeUrl(url);
+```
+
+The Wisp URL is constructed dynamically so it always matches the current
+origin — `wss://` on HTTPS pages and `ws://` on plain HTTP (typically local
+development). The `/wisp/` endpoint is handled by `wisp-server-node` inside
+`src/index.js`:
+
+```js title="src/index.js"
+server.on("upgrade", (req, socket, head) => {
+  if (req.url.endsWith("/wisp/")) {
+    wisp.routeRequest(req, socket, head);
+    return;
+  }
+  socket.end();
+});
+```
+
+## Transport options
+
+<Tabs>
+  <Tab title="EpoxyTransport (default)">
+    **EpoxyTransport** is the default and recommended transport. It tunnels
+    HTTP and HTTPS requests over a Wisp WebSocket connection using an
+    encrypted channel implemented in WebAssembly. Because traffic flows
+    through an encrypted tunnel rather than a plain Bare HTTP relay, it is
+    significantly harder to inspect or block at the network level.
+
+    The transport module is served by the Express app at `/epoxy/` from the
+    `@mercuryworkshop/epoxy-transport` package:
+
+    ```js title="src/index.js"
+    import { epoxyPath } from "@mercuryworkshop/epoxy-transport";
+    // ...
+    app.use("/epoxy/", express.static(epoxyPath));
+    ```
+
+    To set EpoxyTransport explicitly (this is already what the default
+    frontend does):
+
+    ```js
+    const wispUrl =
+      (location.protocol === "https:" ? "wss" : "ws") +
+      "://" +
+      location.host +
+      "/wisp/";
+
+    await connection.setTransport("/epoxy/index.mjs", [{ wisp: wispUrl }]);
+    ```
+
+    The single configuration object passed in the options array must contain
+    a `wisp` key pointing at the Wisp WebSocket endpoint. The server must
+    have a working Wisp handler at that path for EpoxyTransport to function.
+
+    <Note>
+      EpoxyTransport requires `SharedArrayBuffer`, which in turn requires the
+      `Cross-Origin-Opener-Policy: same-origin` and
+      `Cross-Origin-Embedder-Policy: require-corp` headers to be set on every
+      response. Ultraviolet App sets these headers unconditionally in
+      `src/index.js`. See [Environment Variables](/configuration/environment)
+      for details.
+    </Note>
+  </Tab>
+
+  <Tab title="CurlTransport">
+    **CurlTransport** (`@mercuryworkshop/curl-transport`) is an alternative
+    that also tunnels over Wisp but uses a different underlying implementation
+    without the WebAssembly encryption layer. It can be a useful fallback when
+    the Epoxy WASM bundle cannot be loaded (for example, in environments with
+    strict Content Security Policies that block WebAssembly).
+
+    CurlTransport is not installed by default. Add it to your project first:
+
+    ```bash
+    pnpm add @mercuryworkshop/curl-transport
+    ```
+
+    Then serve the package files and switch the transport in `public/index.js`:
+
+    ```js title="src/index.js — add the static mount"
+    import { curlPath } from "@mercuryworkshop/curl-transport";
+    // ...
+    app.use("/curl/", express.static(curlPath));
+    ```
+
+    ```js title="public/index.js — switch transport"
+    const wispUrl =
+      (location.protocol === "https:" ? "wss" : "ws") +
+      "://" +
+      location.host +
+      "/wisp/";
+
+    await connection.setTransport("/curl/index.mjs", [{ wisp: wispUrl }]);
+    ```
+
+    <Tip>
+      You can offer users a runtime transport selector by calling
+      `connection.setTransport()` from a settings UI rather than hardcoding
+      the choice at form-submit time.
+    </Tip>
+  </Tab>
+
+  <Tab title="Bare Client (legacy)">
+    **Bare Client** (`@mercuryworkshop/bare-as-module3`) is the original
+    transport from the pre-BareMux era. It sends proxied requests as plain
+    HTTP to a Bare server endpoint rather than tunnelling over a Wisp
+    WebSocket. It does not use encryption in transit between the browser and
+    the relay server.
+
+    <Warning>
+      Bare Client is a legacy transport and is **not recommended for new
+      deployments**. Traffic between the browser and the Bare relay is
+      unencrypted even on HTTPS pages, making it easier to detect and block.
+      Use EpoxyTransport unless you have a specific reason to need the Bare
+      protocol.
+    </Warning>
+
+    If you are migrating an older deployment that relies on a Bare server,
+    install the module:
+
+    ```bash
+    pnpm add @mercuryworkshop/bare-as-module3
+    ```
+
+    Then serve it and configure the transport with the URL of your Bare server
+    endpoint:
+
+    ```js title="src/index.js — add the static mount"
+    import { barePath } from "@mercuryworkshop/bare-as-module3";
+    // ...
+    app.use("/bare-client/", express.static(barePath));
+    ```
+
+    ```js title="public/index.js — switch transport"
+    // Point to your Bare server endpoint, e.g. a separate bare-server-node instance
+    await connection.setTransport("/bare-client/index.mjs", [
+      new URL("https://your-bare-server.example.com/"),
+    ]);
+    ```
+
+    Note that Bare Client does **not** use a Wisp URL — it contacts the Bare
+    server directly over HTTP(S) rather than via a WebSocket tunnel.
+  </Tab>
+</Tabs>
+
+## Wisp URL construction
+
+The Wisp WebSocket URL is always derived from the current page origin so that
+the tunnel connects back to the same server that served the page. The logic in
+`public/index.js` handles both secure and plain origins:
+
+```js title="public/index.js"
+let wispUrl =
+  (location.protocol === "https:" ? "wss" : "ws") +
+  "://" +
+  location.host +
+  "/wisp/";
+```
+
+| Page origin | Wisp URL |
+|---|---|
+| `https://example.com` | `wss://example.com/wisp/` |
+| `http://localhost:8080` | `ws://localhost:8080/wisp/` |
+
+The `/wisp/` route is handled on the server by upgrading the HTTP connection to
+a WebSocket and routing it through `wisp-server-node`. Plain HTTP upgrade
+requests that do not end with `/wisp/` are rejected immediately.
+
+## Transport selection summary
+
+| Transport | Protocol | Encryption | Wisp required | Recommended |
+|---|---|---|---|---|
+| EpoxyTransport | WebSocket/Wisp | ✅ WASM-encrypted | ✅ Yes | ✅ Default |
+| CurlTransport | WebSocket/Wisp | ❌ No | ✅ Yes | ⚠️ Fallback |
+| Bare Client | HTTP | ❌ No | ❌ No | ❌ Legacy |

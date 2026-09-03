@@ -1,0 +1,83 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Ultraviolet App",
+  "projectDescription": "A deployable, production-ready Node.js application that bundles the Ultraviolet web proxy with an Express server, service-worker-based URL rewriting, and multiple HTTP transport options for censorship evasion.",
+  "theme": "aspen",
+  "primaryColor": "#896bab",
+  "lightColor": "#b29dc6",
+  "darkColor": "#434c5e",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "deployment/docker",
+              "deployment/platforms"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/uv-config",
+              "configuration/transports",
+              "configuration/environment"
+            ]
+          },
+          {
+            "group": "How It Works",
+            "pages": [
+              "concepts/architecture",
+              "concepts/service-workers",
+              "concepts/bare-mux"
+            ]
+          },
+          {
+            "group": "Customization",
+            "pages": [
+              "customization/frontend",
+              "customization/search-engine"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/troubleshooting",
+              "reference/faq"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Service-worker-based URL rewriting via Ultraviolet core",
+    "Express server with static asset serving for UV, Epoxy, and BareMux",
+    "WebSocket tunneling via Wisp protocol",
+    "EpoxyTransport for encrypted HTTP connections",
+    "BareMux transport abstraction layer",
+    "XOR URL encoding for basic obfuscation",
+    "Docker and Docker Compose support for containerized deployment",
+    "One-click deploy to Replit, Railway, and Koyeb",
+    "Graceful SIGTERM/SIGINT shutdown handling",
+    "COOP/COEP headers for SharedArrayBuffer support"
+  ],
+  "publicApiSurface": [
+    "GET /* — serves static public assets",
+    "GET /uv/* — serves Ultraviolet core files",
+    "GET /epoxy/* — serves EpoxyTransport files",
+    "GET /baremux/* — serves BareMux worker files",
+    "WS /wisp/ — Wisp WebSocket tunnel endpoint",
+    "GET * (404 fallback) — returns 404.html",
+    "__uv$config.prefix — proxied URL prefix (/uv/service/)",
+    "__uv$config.encodeUrl — XOR URL encoder",
+    "__uv$config.decodeUrl — XOR URL decoder",
+    "search(input, template) — resolves user input to a fully qualified URL",
+    "registerSW() — registers the Ultraviolet service worker",
+    "PORT environment variable — configures listen port (default 8080)"
+  ]
+}

@@ -1,0 +1,233 @@
+---
+title: "One-Click Platform Deployments for Ultraviolet App"
+sidebarTitle: "Platforms"
+description: "Deploy Ultraviolet App to Replit, Railway, or Koyeb with one click, or use a terminal on any VPS or cloud server."
+---
+
+Ultraviolet App includes platform metadata files (`app.json`, `.replit`) that enable zero-configuration one-click deploys on several hosting services. Whether you prefer a managed platform or want full control on your own server, the application exposes a single `PORT` environment variable and requires no build step beyond `npm install` (or `pnpm install`).
+
+<Warning>
+  **HTTPS is required in production.** Service workers are a secure-context API. On any domain other than `localhost` or `127.0.0.1`, the browser will refuse to register the service worker unless the site is served over `https://`. All of the platforms below provide TLS automatically. If you are running on a bare VPS, place the app behind a reverse proxy (Caddy, Nginx, Traefik) that terminates TLS before going live.
+</Warning>
+
+<Tabs>
+  <Tab title="Replit">
+    Replit hosts Node.js applications in a browser-accessible environment with a public HTTPS URL generated automatically. The repository includes a `.replit` configuration file that Replit reads on import.
+
+    **`.replit` configuration**
+
+    ```toml .replit
+    language = "nix"
+    run = ["npm", "start"]
+
+    [packager]
+    language = "nodejs-npm"
+
+    [nix]
+    channel = "stable-25_11"
+
+    [unitTest]
+    language = "nodejs"
+    ```
+
+    Key settings:
+
+    | Field | Value | Effect |
+    |---|---|---|
+    | `language` | `"nix"` | Uses the Nix package manager for system-level dependencies. |
+    | `run` | `["npm", "start"]` | Executes the `start` script from `package.json` (`node src/index.js`). |
+    | `nix.channel` | `"stable-25_11"` | Pins the Nix channel to the `stable-25_11` release for reproducible builds. |
+
+    **Deploy steps**
+
+    <Steps>
+      <Step title="Import the repository">
+        Go to [replit.com](https://replit.com), click **Create Repl**, choose **Import from GitHub**, and paste the repository URL: `https://github.com/titaniumnetwork-dev/Ultraviolet-App`.
+      </Step>
+      <Step title="Run the Repl">
+        Click the **Run** button. Replit installs npm dependencies and executes `npm start`. The built-in web preview opens at a public `*.repl.co` URL with HTTPS enabled.
+      </Step>
+      <Step title="Set a custom port (optional)">
+        Replit injects its own `PORT` value automatically. You do not need to set it manually.
+      </Step>
+    </Steps>
+
+    <Note>
+      Replit free-tier Repls sleep after inactivity. Consider upgrading to a paid plan or using a separate uptime monitor if you need the proxy to be available continuously.
+    </Note>
+  </Tab>
+
+  <Tab title="Railway">
+    Railway detects Node.js projects automatically and injects a `PORT` environment variable that the app reads at startup. The `app.json` file provides display metadata used by the Railway dashboard.
+
+    **`app.json` metadata**
+
+    ```json app.json
+    {
+      "name": "Ultraviolet App",
+      "description": "Node.js Ultraviolet instance",
+      "repository": "https://github.com/titaniumnetwork-dev/Ultraviolet-App",
+      "logo": "https://raw.githubusercontent.com/titaniumnetwork-dev/Ultraviolet-Static/main/public/uv.png",
+      "keywords": ["tomp", "ultraviolet"]
+    }
+    ```
+
+    **Deploy steps**
+
+    <Steps>
+      <Step title="Connect your repository">
+        Log in to [railway.app](https://railway.app), click **New Project → Deploy from GitHub repo**, and select your fork (or the upstream repository if you have access).
+      </Step>
+      <Step title="Let Railway build and deploy">
+        Railway automatically detects `package.json`, runs `npm install`, and executes the `start` script. No `railway.toml` or Dockerfile is required, though using the Dockerfile is also supported.
+      </Step>
+      <Step title="Set environment variables (optional)">
+        Railway injects `PORT` automatically. To set any additional variables, open **Settings → Variables** in the Railway dashboard.
+      </Step>
+      <Step title="Access your deployment">
+        Railway generates a public `*.up.railway.app` URL with HTTPS and routes traffic to the container on the injected port.
+      </Step>
+    </Steps>
+
+    <Tip>
+      Railway supports custom domains. Point a CNAME record at your Railway-provided hostname and add the domain in the project's **Settings → Domains** panel.
+    </Tip>
+  </Tab>
+
+  <Tab title="Koyeb">
+    Koyeb is a serverless platform with a persistent container model well-suited for WebSocket-heavy applications like Ultraviolet. It builds directly from your GitHub repository and provisions a public HTTPS endpoint.
+
+    **Deploy steps**
+
+    <Steps>
+      <Step title="Create a Koyeb account">
+        Sign up at [koyeb.com](https://www.koyeb.com) and connect your GitHub account in **Settings → Git**.
+      </Step>
+      <Step title="Create a new service">
+        Click **Create App → Web Service**, choose **GitHub** as the deployment source, and select the `titaniumnetwork-dev/Ultraviolet-App` repository (or your fork).
+      </Step>
+      <Step title="Configure the service">
+        Koyeb detects the Node.js project automatically. Set the following if the defaults differ:
+
+        | Setting | Value |
+        |---|---|
+        | **Build command** | _(leave empty — no build step)_ |
+        | **Run command** | `node src/index.js` |
+        | **Port** | `8080` |
+      </Step>
+      <Step title="Deploy">
+        Click **Deploy**. Koyeb builds the image, starts the container, and provides a public `*.koyeb.app` URL with HTTPS.
+      </Step>
+    </Steps>
+
+    <Note>
+      Koyeb's free tier keeps services running continuously without sleep, making it a good choice for always-on proxy deployments.
+    </Note>
+  </Tab>
+
+  <Tab title="Terminal / VPS">
+    For full control — bare metal, a cloud VM (EC2, DigitalOcean Droplet, Linode, Hetzner), or any server with SSH access — follow these steps.
+
+    **Prerequisites**
+
+    - Node.js ≥ 24 installed on the server (`node --version` to verify)
+    - Git
+    - A reverse proxy (Caddy or Nginx) with a valid TLS certificate if you need HTTPS on a public domain
+
+    **Deploy steps**
+
+    <Steps>
+      <Step title="Clone and install">
+        ```bash
+        git clone https://github.com/titaniumnetwork-dev/Ultraviolet-App.git
+        cd Ultraviolet-App
+        npm install
+        ```
+
+        If pnpm is available (install via `corepack enable && corepack prepare pnpm@latest --activate`):
+
+        ```bash
+        pnpm install
+        ```
+      </Step>
+
+      <Step title="Start the server">
+        Run on the default port:
+
+        ```bash
+        pnpm start
+        ```
+
+        Or override the port:
+
+        ```bash
+        PORT=3000 pnpm start
+        ```
+
+        The server prints listening addresses to stdout:
+
+        ```
+        Listening on:
+            http://localhost:3000
+            http://your-hostname:3000
+            http://0.0.0.0:3000
+        ```
+      </Step>
+
+      <Step title="Keep the process running with a process manager">
+        For a long-lived deployment, use a process manager so the server restarts on crash or reboot.
+
+        <CodeGroup>
+          ```bash PM2
+          npm install -g pm2
+          pm2 start src/index.js --name ultraviolet
+          pm2 save
+          pm2 startup
+          ```
+
+          ```bash systemd (Linux)
+          # Create /etc/systemd/system/ultraviolet.service
+          # Then:
+          systemctl enable ultraviolet
+          systemctl start ultraviolet
+          ```
+        </CodeGroup>
+
+        A minimal systemd unit file:
+
+        ```ini /etc/systemd/system/ultraviolet.service
+        [Unit]
+        Description=Ultraviolet App
+        After=network.target
+
+        [Service]
+        Type=simple
+        WorkingDirectory=/opt/Ultraviolet-App
+        ExecStart=/usr/bin/node src/index.js
+        Restart=on-failure
+        Environment=PORT=8080
+        Environment=NODE_ENV=production
+
+        [Install]
+        WantedBy=multi-user.target
+        ```
+      </Step>
+
+      <Step title="Configure HTTPS with Caddy (recommended)">
+        Caddy obtains and renews TLS certificates from Let's Encrypt automatically. Install Caddy, then create a `Caddyfile`:
+
+        ```caddy Caddyfile
+        proxy.yourdomain.com {
+            reverse_proxy localhost:8080
+        }
+        ```
+
+        Start Caddy and your site is immediately reachable over HTTPS.
+      </Step>
+    </Steps>
+
+    <Warning>
+      Ensure ports 80 and 443 are open in your server's firewall rules so Caddy can complete the ACME HTTP-01 challenge and serve HTTPS traffic.
+    </Warning>
+  </Tab>
+</Tabs>
